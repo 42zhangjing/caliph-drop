@@ -1,0 +1,172 @@
+diff --git a/cloudflare/worker.js b/cloudflare/worker.js
+--- a/cloudflare/worker.js
++++ b/cloudflare/worker.js
+@@ -1,6 +1,7 @@
+ import { handleCollectionRequest, purgeExpiredTrash } from "../runtime/collections.js";
+ import { handleArtificialAnalysisRequest } from "../runtime/artificialAnalysis.js";
+ import { handleDirectoryRequest } from "../runtime/directory.js";
++import { handleDropUploadRequest } from "../runtime/dropUpload.js";
+ import { handleFaviconRequest } from "../runtime/favicon.js";
+ import { handleHealthCheckRequest } from "../runtime/healthCheck.js";
+ import { handleOgRequest } from "../runtime/og.js";
+@@ -27,6 +28,10 @@ export default {
+   async fetch(request, env, ctx) {
+     const url = new URL(request.url);
+ 
++    if (url.pathname === "/api/drop") {
++      return handleDropUploadRequest(request, env);
++    }
++
+     if (url.pathname === "/api/og") {
+       return handleOgRequest(request);
+     }
+diff --git a/runtime/dropUpload.js b/runtime/dropUpload.js
+new file mode 100644
+--- /dev/null
++++ b/runtime/dropUpload.js
+@@ -0,0 +1,145 @@
++import { HttpError, errorResponse, jsonResponse, slugifyCollection } from "./collections.js";
++
++const ALLOWED_IMAGE_TYPES = new Set([
++  "image/jpeg",
++  "image/png",
++  "image/webp",
++  "image/avif",
++  "image/heic",
++  "image/heif",
++  "image/tiff",
++]);
++const DEFAULT_UPLOAD_LIMIT = 50 * 1024 * 1024;
++
++function headerValue(request, name) {
++  const value = request.headers.get(name) || "";
++  try { return decodeURIComponent(value); } catch { return value; }
++}
++
++function safeFileName(value) {
++  const decoded = String(value || "upload").normalize("NFKC");
++  const name = decoded.replace(/[^\p{Letter}\p{Number}._-]+/gu, "-").slice(-100);
++  return name || "upload";
++}
++
++function baseName(value) {
++  return value.replace(/\.[^/.]+$/, "").slice(0, 160);
++}
++
++async function hashesEqual(left, right) {
++  const encoder = new TextEncoder();
++  const [a, b] = await Promise.all([
++    crypto.subtle.digest("SHA-256", encoder.encode(left)),
++    crypto.subtle.digest("SHA-256", encoder.encode(right)),
++  ]);
++  const aa = new Uint8Array(a);
++  const bb = new Uint8Array(b);
++  let diff = 0;
++  for (let i = 0; i < aa.length; i += 1) diff |= aa[i] ^ bb[i];
++  return diff === 0;
++}
++
++async function requireDropToken(request, env) {
++  const expected = String(env.CALIPH_DROP_TOKEN || "");
++  if (!expected) throw new HttpError(503, "CALIPH_DROP_TOKEN 尚未配置");
++  const authorization = request.headers.get("authorization") || "";
++  const provided = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
++  if (!provided || !(await hashesEqual(provided, expected))) {
++    throw new HttpError(401, "Caliph Drop Token 不正确");
++  }
++}
++
++async function createImageRecord(request, env) {
++  await requireDropToken(request, env);
++  if (!env.COLLECTIONS_DB) throw new HttpError(503, "D1 尚未配置");
++  if (!env.COLLECTION_MEDIA) throw new HttpError(503, "R2 媒体存储尚未配置");
++  if (request.method !== "POST") throw new HttpError(405, "只支持 POST 上传");
++
++  const contentType = (request.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
++  if (!ALLOWED_IMAGE_TYPES.has(contentType)) throw new HttpError(415, "只接受常见图片格式");
++
++  const body = await request.arrayBuffer();
++  if (!body.byteLength) throw new HttpError(400, "上传内容为空");
++  const maxBytes = Number.parseInt(env.UPLOAD_MAX_BYTES || "", 10) || DEFAULT_UPLOAD_LIMIT;
++  if (body.byteLength > maxBytes) {
++    throw new HttpError(413, `单个文件不能超过 ${Math.round(maxBytes / 1024 / 1024)} MB`);
++  }
++
++  const now = new Date().toISOString();
++  const capturedAt = now.slice(0, 10);
++  const collectionId = crypto.randomUUID();
++  const mediaId = crypto.randomUUID();
++  const fileName = safeFileName(headerValue(request, "x-file-name"));
++  const requestedTitle = headerValue(request, "x-title").trim();
++  const title = requestedTitle.slice(0, 180);
++  const publish = request.headers.get("x-publish") !== "0";
++  const status = publish ? "published" : "draft";
++  const slugSeed = title || baseName(fileName) || `drop-${collectionId.slice(0, 8)}`;
++  const slug = `${slugifyCollection(slugSeed) || "drop"}-${collectionId.slice(0, 8)}`;
++  const storageKey = `collections/${collectionId}/${mediaId}-${fileName}`;
++
++  try {
++    await env.COLLECTION_MEDIA.put(storageKey, body, {
++      httpMetadata: { contentType },
++      customMetadata: { originalName: fileName, collectionId, source: "caliph-drop" },
++    });
++
++    await env.COLLECTIONS_DB.prepare(
++      `INSERT INTO collections (
++        id, slug, type, title, summary, body, source_url, prompt_text,
++        metadata_json, tags_json, status, featured, captured_at, published_at,
++        created_at, updated_at, deleted_at
++      ) VALUES (?, ?, 'image', ?, '', '', '', '', ?, '[]', ?, 0, ?, ?, ?, ?, NULL)`,
++    )
++      .bind(
++        collectionId,
++        slug,
++        title,
++        JSON.stringify({ source: "caliph-drop", originalName: fileName }),
++        status,
++        capturedAt,
++        publish ? now : null,
++        now,
++        now,
++      )
++      .run();
++
++    await env.COLLECTIONS_DB.prepare(
++      "INSERT INTO collection_media (id, collection_id, kind, storage_key, source_url, mime_type, alt_text, poster_url, caption, sort_order, created_at) VALUES (?, ?, 'image', ?, '', ?, ?, '', '', 0, ?)",
++    )
++      .bind(mediaId, collectionId, storageKey, contentType, title, now)
++      .run();
++  } catch (error) {
++    try { await env.COLLECTION_MEDIA.delete(storageKey); } catch {}
++    try { await env.COLLECTIONS_DB.prepare("DELETE FROM collections WHERE id = ?").bind(collectionId).run(); } catch {}
++    throw error;
++  }
++
++  const publicPath = `/media/${encodeURIComponent(mediaId)}`;
++  const publicUrl = new URL(publicPath, request.url).href;
++  return jsonResponse({
++    ok: true,
++    url: publicUrl,
++    item: {
++      id: collectionId,
++      slug,
++      type: "image",
++      title,
++      status,
++      capturedAt,
++    },
++    media: {
++      id: mediaId,
++      publicUrl: publicPath,
++      mimeType: contentType,
++    },
++  }, 201);
++}
++
++export async function handleDropUploadRequest(request, env) {
++  try {
++    return await createImageRecord(request, env);
++  } catch (error) {
++    return errorResponse(error);
++  }
++}
