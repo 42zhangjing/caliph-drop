@@ -190,7 +190,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let view else { return }
         view.wantsLayer = true
         guard let layer = view.layer else { return }
-        layer.anchorPoint = CGPoint(x: 0.5, y: 1.0)
         layer.opacity = 1.0
         layer.transform = CATransform3DMakeScale(scale, scale, 1.0)
     }
