@@ -8,19 +8,42 @@ final class DropStatusView: NSView {
     private var highlighted = false {
         didSet { needsDisplay = true }
     }
+    private var uploadActivity: UploadActivity = .idle
+    private var successReset: DispatchWorkItem?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL])
+        configureAccessibility()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL])
+        configureAccessibility()
     }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
         onClick?()
+    }
+
+    func setUploadActivity(_ activity: UploadActivity) {
+        successReset?.cancel()
+        uploadActivity = activity
+        updateAccessibilityLabel()
+        needsDisplay = true
+
+        guard activity == .success else { return }
+        let reset = DispatchWorkItem { [weak self] in
+            guard let self, self.uploadActivity == .success else { return }
+            self.uploadActivity = .idle
+            self.updateAccessibilityLabel()
+            self.needsDisplay = true
+        }
+        successReset = reset
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: reset)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -55,8 +78,31 @@ final class DropStatusView: NSView {
             bg.fill()
         }
 
+        let symbol: String
+        let color: NSColor
+        if highlighted {
+            symbol = "arrow.down.circle.fill"
+            color = .controlAccentColor
+        } else {
+            switch uploadActivity {
+            case .idle:
+                symbol = "arrow.up.circle"
+                color = .labelColor
+            case .working:
+                symbol = "arrow.up.circle.fill"
+                color = .controlAccentColor
+            case .success:
+                symbol = "checkmark.circle.fill"
+                color = .systemGreen
+            case .failed:
+                symbol = "exclamationmark.triangle.fill"
+                color = .systemRed
+            }
+        }
+
         let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-        let image = NSImage(systemSymbolName: highlighted ? "arrow.down.circle.fill" : "arrow.up.circle", accessibilityDescription: "Caliph Drop")?
+            .applying(NSImage.SymbolConfiguration(hierarchicalColor: color))
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Caliph Drop")?
             .withSymbolConfiguration(config)
         image?.isTemplate = true
         let size = image?.size ?? NSSize(width: 16, height: 16)
@@ -72,7 +118,24 @@ final class DropStatusView: NSView {
             .urlReadingFileURLsOnly: true
         ]
         let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
-        let allowed = Set(["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff"])
-        return objects.filter { allowed.contains($0.pathExtension.lowercased()) }
+        return SupportedImage.filter(objects)
+    }
+
+    private func configureAccessibility() {
+        toolTip = "Caliph Drop：拖入图片或点击打开"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        updateAccessibilityLabel()
+    }
+
+    private func updateAccessibilityLabel() {
+        let label: String
+        switch uploadActivity {
+        case .idle: label = "Caliph Drop，拖入图片或点击打开"
+        case .working: label = "Caliph Drop，正在上传"
+        case .success: label = "Caliph Drop，上传成功"
+        case .failed: label = "Caliph Drop，上传失败"
+        }
+        setAccessibilityLabel(label)
     }
 }

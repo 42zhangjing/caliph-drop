@@ -11,10 +11,18 @@ enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        let status = SecItemAdd(add as CFDictionary, nil)
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus))
+        }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
         }

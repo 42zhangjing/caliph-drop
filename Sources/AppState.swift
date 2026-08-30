@@ -1,6 +1,18 @@
 import AppKit
 import Foundation
+import ServiceManagement
 import UniformTypeIdentifiers
+
+private struct UploadConfiguration: Sendable {
+    var uploadURL: String
+    var token: String
+    var maxPixel: Double
+    var quality: Double
+    var preferWebP: Bool
+    var publishImmediately: Bool
+    var useFilenameAsTitle: Bool
+    var copyLastURL: Bool
+}
 
 @MainActor
 final class AppState: ObservableObject {
@@ -12,6 +24,7 @@ final class AppState: ObservableObject {
     @Published var publishImmediately: Bool = true
     @Published var useFilenameAsTitle: Bool = false
     @Published var copyLastURL: Bool = true
+    @Published private(set) var launchAtLogin: Bool = false
     @Published var items: [UploadItem] = []
     @Published var message: String = "把图片拖到顶部菜单栏的上传图标即可"
     @Published var showingSettings: Bool = false
@@ -19,6 +32,16 @@ final class AppState: ObservableObject {
     private let defaults = UserDefaults.standard
     private let tokenAccount = "caliph-drop-upload-token"
     private var uploadTask: Task<Void, Never>?
+    private var savedSettings = UploadConfiguration(
+        uploadURL: "https://caliph.chengyu.dev/api/drop",
+        token: "",
+        maxPixel: 2560,
+        quality: 0.88,
+        preferWebP: true,
+        publishImmediately: true,
+        useFilenameAsTitle: false,
+        copyLastURL: true
+    )
 
     func loadSettings() {
         uploadURL = defaults.string(forKey: "uploadURL") ?? "https://caliph.chengyu.dev/api/drop"
@@ -28,28 +51,80 @@ final class AppState: ObservableObject {
         publishImmediately = defaults.object(forKey: "publishImmediately") as? Bool ?? true
         useFilenameAsTitle = defaults.object(forKey: "useFilenameAsTitle") as? Bool ?? false
         copyLastURL = defaults.object(forKey: "copyLastURL") as? Bool ?? true
-        token = (try? KeychainStore.load(account: tokenAccount)) ?? ""
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+        do {
+            token = try KeychainStore.load(account: tokenAccount) ?? ""
+        } catch {
+            token = ""
+            message = "无法读取 Keychain：\(error.localizedDescription)"
+        }
+        savedSettings = draftConfiguration(token: token)
         showingSettings = token.isEmpty
     }
 
     func saveSettings() {
-        defaults.set(uploadURL, forKey: "uploadURL")
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else {
+            message = "请先填入 CALIPH_DROP_TOKEN"
+            showingSettings = true
+            return
+        }
+        guard let endpoint = UploadEndpoint.url(from: uploadURL) else {
+            message = "上传地址必须是 HTTPS；本机调试仅允许 localhost HTTP"
+            showingSettings = true
+            return
+        }
+
+        do {
+            try KeychainStore.save(normalizedToken, account: tokenAccount)
+        } catch {
+            message = "Token 保存失败：\(error.localizedDescription)"
+            showingSettings = true
+            return
+        }
+
+        token = normalizedToken
+        uploadURL = endpoint.absoluteString
+        savedSettings = draftConfiguration(token: normalizedToken)
+        defaults.set(savedSettings.uploadURL, forKey: "uploadURL")
         defaults.set(maxPixel, forKey: "maxPixel")
         defaults.set(quality, forKey: "quality")
         defaults.set(preferWebP, forKey: "preferWebP")
         defaults.set(publishImmediately, forKey: "publishImmediately")
         defaults.set(useFilenameAsTitle, forKey: "useFilenameAsTitle")
         defaults.set(copyLastURL, forKey: "copyLastURL")
-        try? KeychainStore.save(token, account: tokenAccount)
         message = "设置已保存"
         showingSettings = false
+        startQueueIfNeeded()
+    }
+
+    func openSettings() {
+        restoreDraftFromSavedSettings()
+        refreshLaunchAtLoginStatus()
+        showingSettings = true
+    }
+
+    func closeSettings() {
+        restoreDraftFromSavedSettings()
+        showingSettings = false
+        if savedSettings.token.isEmpty, items.contains(where: { $0.status == .waiting }) {
+            message = "队列正在等待 Token；可重新打开设置，或点“清理”取消"
+        }
+    }
+
+    func discardUnsavedSettings() {
+        guard showingSettings else { return }
+        restoreDraftFromSavedSettings()
+        if savedSettings.token.isEmpty, items.contains(where: { $0.status == .waiting }) {
+            message = "队列正在等待 Token；请保存设置后继续"
+        }
     }
 
     func chooseImages() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = SupportedImage.contentTypes
         panel.begin { [weak self] result in
             guard result == .OK else { return }
             Task { @MainActor in
@@ -59,16 +134,15 @@ final class AppState: ObservableObject {
     }
 
     func enqueue(urls: [URL]) {
-        let allowed = Set(["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tif", "tiff"])
-        let filtered = urls.filter { allowed.contains($0.pathExtension.lowercased()) }
+        let filtered = SupportedImage.filter(urls)
         guard !filtered.isEmpty else {
             message = "没有识别到可上传的图片"
             return
         }
 
-        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !savedSettings.token.isEmpty else {
             items.append(contentsOf: filtered.map(UploadItem.init))
-            showingSettings = true
+            openSettings()
             message = "第一次使用：先填入 CALIPH_DROP_TOKEN"
             return
         }
@@ -77,9 +151,17 @@ final class AppState: ObservableObject {
         startQueueIfNeeded()
     }
 
+    func addDropFailures(_ names: [String]) {
+        guard !names.isEmpty else { return }
+        for name in names {
+            items.append(UploadItem(failedFileName: name, reason: "无法从 Finder 读取该文件"))
+        }
+        message = "有 \(names.count) 个文件无法读取，已在队列中标记失败"
+    }
+
     func retryFailed() {
         for index in items.indices {
-            if case .failed = items[index].status {
+            if case .failed = items[index].status, items[index].isRetryable {
                 items[index].status = .waiting
             }
         }
@@ -90,8 +172,43 @@ final class AppState: ObservableObject {
         items.removeAll {
             switch $0.status {
             case .done, .failed: return true
-            default: return false
+            case .waiting: return savedSettings.token.isEmpty
+            case .processing, .uploading: return false
             }
+        }
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            switch SMAppService.mainApp.status {
+            case .enabled:
+                launchAtLogin = true
+                message = "已启用登录时自动启动"
+            case .requiresApproval:
+                launchAtLogin = false
+                message = "请在系统设置 → 通用 → 登录项中允许 Caliph Drop"
+            case .notFound:
+                launchAtLogin = false
+                message = "请先把 Caliph Drop 放入“应用程序”文件夹再开启"
+            case .notRegistered:
+                launchAtLogin = false
+                message = "已关闭登录时自动启动"
+            @unknown default:
+                launchAtLogin = false
+                message = "登录启动项状态未知，请在系统设置中确认"
+            }
+        } catch {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+            message = "无法修改登录启动项：\(error.localizedDescription)"
         }
     }
 
@@ -112,34 +229,36 @@ final class AppState: ObservableObject {
         while let index = items.firstIndex(where: { $0.status == .waiting }) {
             let id = items[index].id
             let sourceURL = items[index].sourceURL
+            let settings = savedSettings
             items[index].status = .processing
             message = "正在处理 \(sourceURL.lastPathComponent)…"
 
             do {
-                let processed = try ImageProcessor.process(
-                    sourceURL: sourceURL,
-                    maxPixel: Int(maxPixel),
-                    quality: quality,
-                    preferWebP: preferWebP
-                )
+                let processed = try await Task.detached(priority: .userInitiated) {
+                    try ImageProcessor.process(
+                        sourceURL: sourceURL,
+                        maxPixel: Int(settings.maxPixel),
+                        quality: settings.quality,
+                        preferWebP: settings.preferWebP
+                    )
+                }.value
+                defer { try? FileManager.default.removeItem(at: processed.fileURL) }
 
                 guard let currentIndex = items.firstIndex(where: { $0.id == id }) else { continue }
                 items[currentIndex].status = .uploading
                 message = "正在上传 \(processed.fileName)…"
 
-                let title = useFilenameAsTitle
+                let title = settings.useFilenameAsTitle
                     ? sourceURL.deletingPathExtension().lastPathComponent
                     : ""
 
                 let result = try await Uploader.upload(
                     image: processed,
-                    endpoint: uploadURL,
-                    token: token,
+                    endpoint: settings.uploadURL,
+                    token: settings.token,
                     title: title,
-                    publish: publishImmediately
+                    publish: settings.publishImmediately
                 )
-                try? FileManager.default.removeItem(at: processed.fileURL)
-
                 guard let finishedIndex = items.firstIndex(where: { $0.id == id }) else { continue }
                 items[finishedIndex].status = .done(result.url)
 
@@ -147,7 +266,7 @@ final class AppState: ObservableObject {
                 let after = ByteCountFormatter.string(fromByteCount: processed.outputBytes, countStyle: .file)
                 message = "✓ \(sourceURL.lastPathComponent)：\(before) → \(after)"
 
-                if copyLastURL, let url = result.url, !url.isEmpty {
+                if settings.copyLastURL, let url = result.url, !url.isEmpty {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(url, forType: .string)
                 }
@@ -158,5 +277,29 @@ final class AppState: ObservableObject {
                 message = "上传失败：\(error.localizedDescription)"
             }
         }
+    }
+
+    private func draftConfiguration(token normalizedToken: String) -> UploadConfiguration {
+        UploadConfiguration(
+            uploadURL: uploadURL,
+            token: normalizedToken,
+            maxPixel: maxPixel,
+            quality: quality,
+            preferWebP: preferWebP,
+            publishImmediately: publishImmediately,
+            useFilenameAsTitle: useFilenameAsTitle,
+            copyLastURL: copyLastURL
+        )
+    }
+
+    private func restoreDraftFromSavedSettings() {
+        uploadURL = savedSettings.uploadURL
+        token = savedSettings.token
+        maxPixel = savedSettings.maxPixel
+        quality = savedSettings.quality
+        preferWebP = savedSettings.preferWebP
+        publishImmediately = savedSettings.publishImmediately
+        useFilenameAsTitle = savedSettings.useFilenameAsTitle
+        copyLastURL = savedSettings.copyLastURL
     }
 }

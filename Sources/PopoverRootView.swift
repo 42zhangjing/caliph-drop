@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PopoverRootView: View {
     @ObservedObject var state: AppState
@@ -32,7 +33,11 @@ struct PopoverRootView: View {
             }
             Spacer()
             Button {
-                state.showingSettings.toggle()
+                if state.showingSettings {
+                    state.closeSettings()
+                } else {
+                    state.openSettings()
+                }
             } label: {
                 Image(systemName: state.showingSettings ? "xmark" : "gearshape")
             }
@@ -46,14 +51,15 @@ struct PopoverRootView: View {
 
 private struct UploadView: View {
     @ObservedObject var state: AppState
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(spacing: 12) {
             VStack(spacing: 8) {
-                Image(systemName: "photo.stack")
+                Image(systemName: isDropTargeted ? "arrow.down.circle.fill" : "photo.stack")
                     .font(.system(size: 34, weight: .light))
-                    .foregroundStyle(.secondary)
-                Text("把图片拖到屏幕顶部的 Caliph 图标")
+                    .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
+                Text(isDropTargeted ? "松开即可上传" : "把图片拖到这里或顶部 Caliph 图标")
                     .font(.system(size: 13, weight: .semibold))
                 Text("也可以从这里选择；支持一次多张")
                     .font(.system(size: 11))
@@ -65,8 +71,19 @@ private struct UploadView: View {
             .padding(.vertical, 16)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(.secondary.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                    .fill(isDropTargeted ? Color.accentColor.opacity(0.09) : Color.clear)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(
+                        isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.25),
+                        style: StrokeStyle(lineWidth: isDropTargeted ? 1.5 : 1, dash: [5, 5])
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
+                handleDrop(providers)
+            }
 
             if state.items.isEmpty {
                 Spacer()
@@ -97,7 +114,11 @@ private struct UploadView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 Spacer()
-                if state.items.contains(where: { if case .failed = $0.status { return true }; return false }) {
+                if state.items.contains(where: {
+                    guard $0.isRetryable else { return false }
+                    if case .failed = $0.status { return true }
+                    return false
+                }) {
                     Button("重试") { state.retryFailed() }
                         .controlSize(.mini)
                 }
@@ -108,6 +129,35 @@ private struct UploadView: View {
             }
         }
         .padding(14)
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter { $0.canLoadObject(ofClass: NSURL.self) }
+        guard !fileProviders.isEmpty else { return false }
+
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var loaded = Array<URL?>(repeating: nil, count: fileProviders.count)
+        var failedNames = Array<String?>(repeating: nil, count: fileProviders.count)
+
+        for (index, provider) in fileProviders.enumerated() {
+            group.enter()
+            provider.loadObject(ofClass: NSURL.self) { object, error in
+                lock.lock()
+                if let url = object as? URL, error == nil {
+                    loaded[index] = url
+                } else {
+                    failedNames[index] = provider.suggestedName ?? "无法读取的文件 \(index + 1)"
+                }
+                lock.unlock()
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            state.enqueue(urls: loaded.compactMap { $0 })
+            state.addDropFailures(failedNames.compactMap { $0 })
+        }
+        return true
     }
 }
 
@@ -171,6 +221,13 @@ private struct SettingsView: View {
                 Toggle("上传后立即发布到图库", isOn: $state.publishImmediately)
                 Toggle("使用文件名作为标题", isOn: $state.useFilenameAsTitle)
                 Toggle("成功后复制最后一张图片 URL", isOn: $state.copyLastURL)
+                Toggle(
+                    "登录时自动启动",
+                    isOn: Binding(
+                        get: { state.launchAtLogin },
+                        set: { state.setLaunchAtLogin($0) }
+                    )
+                )
 
                 sectionTitle("沿用网站现有压缩规则")
                 HStack {
@@ -189,7 +246,7 @@ private struct SettingsView: View {
 
                 Toggle("优先输出 WebP（系统编码器支持时）", isOn: $state.preferWebP)
 
-                Text("默认参数已经与你的网站后台一致：最长边 2560px、质量 0.88；如果压缩后没有变小，会自动保留原图。Token 不会写进源码，而是保存在 macOS Keychain。")
+                Text("默认参数已经与你的网站后台一致：最长边 2560px、质量 0.88。只有无需缩放、没有相机/GPS 等私密元数据且重新编码没有更小时，才会保留原图。Token 不会写进源码，而是保存在 macOS Keychain。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -205,6 +262,7 @@ private struct SettingsView: View {
             }
             .padding(16)
         }
+        .onAppear { state.refreshLaunchAtLoginStatus() }
     }
 
     private func sectionTitle(_ text: String) -> some View {

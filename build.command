@@ -25,19 +25,24 @@ xcrun swiftc \
   Sources/*.swift \
   -o "$APP/Contents/MacOS/CaliphDrop" \
   -framework AppKit \
+  -framework Combine \
   -framework SwiftUI \
   -framework UniformTypeIdentifiers \
   -framework ImageIO \
   -framework Security \
+  -framework ServiceManagement \
   -framework CoreGraphics
 
 cp Info.plist "$APP/Contents/Info.plist"
+cp Resources/CaliphDrop.icns "$APP/Contents/Resources/CaliphDrop.icns"
 
-# 本机构建的 ad-hoc 签名，便于直接运行。
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# 本机构建的 ad-hoc 签名，便于直接运行；签名失败时构建应明确失败。
+codesign --force --deep --sign - "$APP" >/dev/null
 
 echo
 printf "✓ 已生成：%s/%s\n" "$(pwd)" "$APP"
 echo "现在可以双击打开 Caliph Drop.app。"
 echo "第一次打开后，屏幕顶部菜单栏会出现上传图标。"
-open "$APP"
+if [[ "${CALIPH_DROP_NO_OPEN:-0}" != "1" ]]; then
+  open "$APP"
+fi
