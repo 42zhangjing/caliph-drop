@@ -1,29 +1,49 @@
 import AppKit
+import QuartzCore
 
 final class DropStatusView: NSView {
     var onClick: (() -> Void)?
     var onDragEntered: (() -> Void)?
     var onDrop: (([URL]) -> Void)?
 
+    private let hitSlop = NSEdgeInsets(top: 7, left: 8, bottom: 7, right: 8)
+
     private var highlighted = false {
-        didSet { needsDisplay = true }
+        didSet {
+            guard highlighted != oldValue else { return }
+            needsDisplay = true
+            if highlighted {
+                animateDropTargetPulse()
+            } else {
+                animateHighlightExit()
+            }
+        }
     }
     private var uploadActivity: UploadActivity = .idle
     private var successReset: DispatchWorkItem?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        registerForDraggedTypes([.fileURL])
-        configureAccessibility()
+        configureView()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        registerForDraggedTypes([.fileURL])
-        configureAccessibility()
+        configureView()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0.01 else { return nil }
+        let expandedBounds = NSRect(
+            x: bounds.minX - hitSlop.left,
+            y: bounds.minY - hitSlop.bottom,
+            width: bounds.width + hitSlop.left + hitSlop.right,
+            height: bounds.height + hitSlop.top + hitSlop.bottom
+        )
+        return expandedBounds.contains(point) ? self : nil
+    }
 
     override func mouseDown(with event: NSEvent) {
         onClick?()
@@ -31,9 +51,14 @@ final class DropStatusView: NSView {
 
     func setUploadActivity(_ activity: UploadActivity) {
         successReset?.cancel()
+        let changed = activity != uploadActivity
         uploadActivity = activity
         updateAccessibilityLabel()
         needsDisplay = true
+
+        if changed {
+            animateStateTransition(for: activity)
+        }
 
         guard activity == .success else { return }
         let reset = DispatchWorkItem { [weak self] in
@@ -41,6 +66,7 @@ final class DropStatusView: NSView {
             self.uploadActivity = .idle
             self.updateAccessibilityLabel()
             self.needsDisplay = true
+            self.animateStateTransition(for: .idle)
         }
         successReset = reset
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: reset)
@@ -111,6 +137,73 @@ final class DropStatusView: NSView {
                           width: size.width,
                           height: size.height)
         image?.draw(in: rect)
+    }
+
+    private func configureView() {
+        wantsLayer = true
+        layer?.masksToBounds = false
+        registerForDraggedTypes([.fileURL])
+        configureAccessibility()
+    }
+
+    private func animateStateTransition(for activity: UploadActivity) {
+        guard let layer else { return }
+        displayIfNeeded()
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.38
+        fade.toValue = 1.0
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        switch activity {
+        case .success:
+            scale.fromValue = 0.80
+            scale.toValue = 1.0
+        case .failed:
+            scale.fromValue = 0.90
+            scale.toValue = 1.0
+        case .idle, .working:
+            scale.fromValue = 0.92
+            scale.toValue = 1.0
+        }
+
+        let group = CAAnimationGroup()
+        group.animations = [fade, scale]
+        group.duration = activity == .success ? 0.22 : 0.16
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(group, forKey: "caliph.activity-transition")
+    }
+
+    private func animateDropTargetPulse() {
+        guard let layer else { return }
+        displayIfNeeded()
+
+        let pulse = CAKeyframeAnimation(keyPath: "transform.scale")
+        pulse.values = [1.0, 1.13, 1.04]
+        pulse.keyTimes = [0.0, 0.55, 1.0]
+        pulse.duration = 0.24
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0.72, 1.0, 0.96]
+        fade.keyTimes = pulse.keyTimes
+        fade.duration = pulse.duration
+        fade.timingFunction = pulse.timingFunction
+
+        let group = CAAnimationGroup()
+        group.animations = [pulse, fade]
+        group.duration = pulse.duration
+        layer.add(group, forKey: "caliph.drop-target-pulse")
+    }
+
+    private func animateHighlightExit() {
+        guard let layer else { return }
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 1.04
+        scale.toValue = 1.0
+        scale.duration = 0.12
+        scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(scale, forKey: "caliph.drop-target-exit")
     }
 
     private func imageURLs(from pasteboard: NSPasteboard) -> [URL] {
