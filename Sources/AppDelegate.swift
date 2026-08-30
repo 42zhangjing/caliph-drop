@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import QuartzCore
 import SwiftUI
 
 @MainActor
@@ -15,6 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var globalEventMonitor: Any?
     private var dragLocalEventMonitor: Any?
     private var dragGlobalEventMonitor: Any?
+    private var popoverCloseWorkItem: DispatchWorkItem?
+    private var isClosingPopover = false
+
+    private static let popoverOpenDuration: TimeInterval = 0.11
+    private static let popoverCloseDuration: TimeInterval = 0.08
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         state.loadSettings()
@@ -25,7 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func setupPopover() {
         popover.behavior = .transient
-        popover.animates = true
+        // NSPopover's stock animation feels intentionally soft/slow. We disable it and
+        // run a much shorter fade + micro-scale transition ourselves.
+        popover.animates = false
         popover.contentSize = NSSize(width: 390, height: 560)
         popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: PopoverRootView(state: state))
@@ -82,10 +90,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func showPopover(activateApp: Bool) {
         guard let view = statusItem.button else { return }
+
+        popoverCloseWorkItem?.cancel()
+        popoverCloseWorkItem = nil
+        isClosingPopover = false
+
         if !popover.isShown {
             popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
             installEventMonitors()
+            animatePopoverOpen()
+        } else {
+            restorePopoverVisualState()
         }
+
         if activateApp {
             NSApp.activate(ignoringOtherApps: true)
             popover.contentViewController?.view.window?.makeKey()
@@ -94,13 +111,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func togglePopover() {
         if popover.isShown {
-            popover.performClose(nil)
+            closePopoverFast()
         } else {
             showPopover(activateApp: true)
         }
     }
 
+    private func animatePopoverOpen() {
+        guard let window = popover.contentViewController?.view.window else { return }
+        let contentView = popover.contentViewController?.view
+
+        window.alphaValue = 0.0
+        prepareContentLayer(contentView, scale: 0.985)
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            restorePopoverVisualState()
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.popoverOpenDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            window.animator().alphaValue = 1.0
+        }
+
+        animateContentScale(contentView, from: 0.985, to: 1.0, duration: Self.popoverOpenDuration)
+    }
+
+    private func closePopoverFast() {
+        guard popover.isShown else { return }
+        guard !isClosingPopover else { return }
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            finishPopoverClose()
+            return
+        }
+
+        isClosingPopover = true
+        popoverCloseWorkItem?.cancel()
+
+        if let window = popover.contentViewController?.view.window {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.popoverCloseDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                context.allowsImplicitAnimation = true
+                window.animator().alphaValue = 0.0
+            }
+        }
+
+        animateContentScale(
+            popover.contentViewController?.view,
+            from: 1.0,
+            to: 0.992,
+            duration: Self.popoverCloseDuration
+        )
+
+        let close = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.finishPopoverClose()
+            }
+        }
+        popoverCloseWorkItem = close
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.popoverCloseDuration, execute: close)
+    }
+
+    private func finishPopoverClose() {
+        popoverCloseWorkItem?.cancel()
+        popoverCloseWorkItem = nil
+        isClosingPopover = false
+        restorePopoverVisualState()
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+    }
+
+    private func prepareContentLayer(_ view: NSView?, scale: CGFloat) {
+        guard let view else { return }
+        view.wantsLayer = true
+        guard let layer = view.layer else { return }
+        layer.anchorPoint = CGPoint(x: 0.5, y: 1.0)
+        layer.opacity = 1.0
+        layer.transform = CATransform3DMakeScale(scale, scale, 1.0)
+    }
+
+    private func animateContentScale(_ view: NSView?, from: CGFloat, to: CGFloat, duration: TimeInterval) {
+        guard let view else { return }
+        view.wantsLayer = true
+        guard let layer = view.layer else { return }
+
+        layer.transform = CATransform3DMakeScale(to, to, 1.0)
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = from
+        scale.toValue = to
+        scale.duration = duration
+        scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(scale, forKey: "caliph.popover-scale")
+    }
+
+    private func restorePopoverVisualState() {
+        if let window = popover.contentViewController?.view.window {
+            window.alphaValue = 1.0
+        }
+        if let layer = popover.contentViewController?.view.layer {
+            layer.removeAnimation(forKey: "caliph.popover-scale")
+            layer.opacity = 1.0
+            layer.transform = CATransform3DIdentity
+        }
+    }
+
     func popoverDidClose(_ notification: Notification) {
+        popoverCloseWorkItem?.cancel()
+        popoverCloseWorkItem = nil
+        isClosingPopover = false
+        restorePopoverVisualState()
         state.discardUnsavedSettings()
         removeEventMonitors()
     }
@@ -110,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        popoverCloseWorkItem?.cancel()
         removeEventMonitors()
         removeDragOverlayMonitors()
         dragOverlay.hide()
@@ -123,13 +249,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ) { [weak self] event in
             guard let self else { return event }
             if event.type == .keyDown, event.keyCode == 53 {
-                self.popover.performClose(nil)
+                self.closePopoverFast()
                 return nil
             }
             if event.type == .leftMouseDown || event.type == .rightMouseDown {
                 let point = NSEvent.mouseLocation
                 if !self.containsInPopover(point) && !self.containsInStatusItem(point) {
-                    self.popover.performClose(nil)
+                    self.closePopoverFast()
                 }
             }
             return event
@@ -139,7 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.popover.performClose(nil)
+                self?.closePopoverFast()
             }
         }
     }
