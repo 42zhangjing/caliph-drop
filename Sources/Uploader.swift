@@ -38,6 +38,12 @@ struct Uploader {
         request.setValue(percentEncodeHeader(image.fileName), forHTTPHeaderField: "X-File-Name")
         request.setValue(percentEncodeHeader(title), forHTTPHeaderField: "X-Title")
         request.setValue(publish ? "1" : "0", forHTTPHeaderField: "X-Publish")
+        if let width = image.width {
+            request.setValue("\(width)", forHTTPHeaderField: "X-Media-Width")
+        }
+        if let height = image.height {
+            request.setValue("\(height)", forHTTPHeaderField: "X-Media-Height")
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = try Data(contentsOf: image.fileURL)
 

@@ -2,6 +2,7 @@ import AppKit
 
 @main
 struct CaliphDropMain {
+    @MainActor
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()

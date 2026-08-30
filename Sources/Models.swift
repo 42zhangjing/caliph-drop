@@ -36,4 +36,6 @@ struct ProcessedImage {
     let mimeType: String
     let originalBytes: Int64
     let outputBytes: Int64
+    let width: Int?
+    let height: Int?
 }

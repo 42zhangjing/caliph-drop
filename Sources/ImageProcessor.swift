@@ -66,6 +66,9 @@ struct ImageProcessor {
         let outputValues = try encodedURL.resourceValues(forKeys: [.fileSizeKey])
         let encodedBytes = Int64(outputValues.fileSize ?? 0)
 
+        let outputWidth = image.width
+        let outputHeight = image.height
+
         // Match the website's existing behavior: if compression is not smaller, keep the original.
         if originalBytes > 0, encodedBytes >= originalBytes {
             try? FileManager.default.removeItem(at: encodedURL)
@@ -78,7 +81,9 @@ struct ImageProcessor {
                 fileName: "\(base).\(originalExt)",
                 mimeType: mimeType(forExtension: originalExt),
                 originalBytes: originalBytes,
-                outputBytes: originalBytes
+                outputBytes: originalBytes,
+                width: outputWidth,
+                height: outputHeight
             )
         }
 
@@ -87,7 +92,9 @@ struct ImageProcessor {
             fileName: "\(base).\(outputExt)",
             mimeType: outputMime,
             originalBytes: originalBytes,
-            outputBytes: encodedBytes
+            outputBytes: encodedBytes,
+            width: outputWidth,
+            height: outputHeight
         )
     }
 
