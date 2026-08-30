@@ -7,14 +7,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let state = AppState()
+    private lazy var dragOverlay = DragOverlayWindow()
+    private weak var dropStatusView: DropStatusView?
+
     private var itemsObservation: AnyCancellable?
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
+    private var dragLocalEventMonitor: Any?
+    private var dragGlobalEventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         state.loadSettings()
         setupPopover()
         setupStatusItem()
+        installDragOverlayMonitors()
     }
 
     private func setupPopover() {
@@ -32,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.title = ""
 
         let dropView = DropStatusView(frame: button.bounds)
+        dropStatusView = dropView
         dropView.autoresizingMask = [.width, .height]
         dropView.onClick = { [weak self] in
             self?.togglePopover()
@@ -46,12 +53,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         button.addSubview(dropView)
 
+        configureDragOverlay(for: dropView)
+
         itemsObservation = state.$items
             .map(Self.activity(for:))
             .removeDuplicates()
             .sink { [weak dropView] activity in
                 dropView?.setUploadActivity(activity)
             }
+    }
+
+    private func configureDragOverlay(for dropView: DropStatusView) {
+        dragOverlay.dropView.onDragEntered = { [weak self, weak dropView] in
+            dropView?.setExternalDragHighlighted(true)
+            self?.showPopover(activateApp: false)
+        }
+        dragOverlay.dropView.onDragExited = { [weak dropView] in
+            dropView?.setExternalDragHighlighted(false)
+        }
+        dragOverlay.dropView.onDrop = { [weak self, weak dropView] urls in
+            guard let self else { return }
+            dropView?.setExternalDragHighlighted(false)
+            self.dragOverlay.hide()
+            self.showPopover(activateApp: false)
+            self.state.enqueue(urls: urls)
+        }
     }
 
     private func showPopover(activateApp: Bool) {
@@ -85,6 +111,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         removeEventMonitors()
+        removeDragOverlayMonitors()
+        dragOverlay.hide()
     }
 
     private func installEventMonitors() {
@@ -127,6 +155,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    private func installDragOverlayMonitors() {
+        guard dragLocalEventMonitor == nil, dragGlobalEventMonitor == nil else { return }
+
+        dragLocalEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            self?.handleDragTracking(eventType: event.type, point: NSEvent.mouseLocation)
+            return event
+        }
+
+        dragGlobalEventMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            let eventType = event.type
+            let point = NSEvent.mouseLocation
+            Task { @MainActor in
+                self?.handleDragTracking(eventType: eventType, point: point)
+            }
+        }
+    }
+
+    private func removeDragOverlayMonitors() {
+        if let dragLocalEventMonitor {
+            NSEvent.removeMonitor(dragLocalEventMonitor)
+            self.dragLocalEventMonitor = nil
+        }
+        if let dragGlobalEventMonitor {
+            NSEvent.removeMonitor(dragGlobalEventMonitor)
+            self.dragGlobalEventMonitor = nil
+        }
+    }
+
+    private func handleDragTracking(eventType: NSEvent.EventType, point: NSPoint) {
+        if eventType == .leftMouseUp {
+            hideDragOverlay()
+            return
+        }
+
+        guard eventType == .leftMouseDragged else { return }
+        guard hasSupportedImageOnDragPasteboard(), let overlayFrame = dragOverlayFrame() else {
+            hideDragOverlay()
+            return
+        }
+
+        // Show the actual target slightly before the cursor reaches it so AppKit has
+        // time to begin NSDraggingDestination negotiation on the next drag update.
+        let activationFrame = overlayFrame.insetBy(dx: -16, dy: -12)
+        if activationFrame.contains(point) {
+            dragOverlay.show(frame: overlayFrame)
+            return
+        }
+
+        let dismissalFrame = overlayFrame.insetBy(dx: -24, dy: -18)
+        if dragOverlay.isVisible, !dismissalFrame.contains(point) {
+            hideDragOverlay()
+        }
+    }
+
+    private func hideDragOverlay() {
+        dragOverlay.hide()
+        dropStatusView?.setExternalDragHighlighted(false)
+    }
+
+    private func hasSupportedImageOnDragPasteboard() -> Bool {
+        let pasteboard = NSPasteboard(name: .drag)
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+        return !SupportedImage.filter(urls).isEmpty
+    }
+
+    private func dragOverlayFrame() -> NSRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        let frameInWindow = button.convert(button.bounds, to: nil)
+        let statusFrame = window.convertToScreen(frameInWindow)
+
+        // 34pt remains the real NSStatusItem width. The transparent drag-only panel
+        // extends the physical destination without changing the visible menu-bar layout.
+        var frame = statusFrame.insetBy(dx: -9, dy: -8)
+        if let screen = window.screen ?? NSScreen.screens.first(where: { $0.frame.intersects(statusFrame) }) {
+            frame = frame.intersection(screen.frame)
+        }
+        guard !frame.isEmpty, !frame.isNull else { return nil }
+        return frame.integral
+    }
+
     private func containsInPopover(_ point: NSPoint) -> Bool {
         popover.contentViewController?.view.window?.frame.contains(point) == true
     }
@@ -154,5 +269,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         return .idle
     }
-
 }
