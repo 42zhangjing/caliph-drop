@@ -49,6 +49,10 @@ final class DropStatusView: NSView {
         onClick?()
     }
 
+    func setExternalDragHighlighted(_ value: Bool) {
+        highlighted = value
+    }
+
     func setUploadActivity(_ activity: UploadActivity) {
         successReset?.cancel()
         let changed = activity != uploadActivity
