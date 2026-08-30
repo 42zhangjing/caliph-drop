@@ -53,6 +53,27 @@ private struct UploadView: View {
     @ObservedObject var state: AppState
     @State private var isDropTargeted = false
 
+    private var completedCount: Int {
+        state.items.reduce(into: 0) { count, item in
+            if case .done = item.status {
+                count += 1
+            }
+        }
+    }
+
+    private var failedCount: Int {
+        state.items.reduce(into: 0) { count, item in
+            if case .failed = item.status {
+                count += 1
+            }
+        }
+    }
+
+    private var progressValue: Double {
+        guard !state.items.isEmpty else { return 0 }
+        return Double(completedCount) / Double(state.items.count)
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             VStack(spacing: 8) {
@@ -76,7 +97,7 @@ private struct UploadView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(
-                        isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.25),
+                        isDropTargeted ? Color.accentColor : Color.primary.opacity(0.32),
                         style: StrokeStyle(lineWidth: isDropTargeted ? 1.5 : 1, dash: [5, 5])
                     )
             )
@@ -98,6 +119,25 @@ private struct UploadView: View {
                 }
                 Spacer()
             } else {
+                VStack(spacing: 7) {
+                    HStack(spacing: 8) {
+                        Text("\(completedCount) / \(state.items.count) 完成")
+                            .font(.system(size: 10, weight: .semibold))
+                        if failedCount > 0 {
+                            Text("· \(failedCount) 失败")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+
+                    ProgressView(value: progressValue)
+                        .progressViewStyle(.linear)
+                        .controlSize(.small)
+                        .animation(.easeOut(duration: 0.18), value: progressValue)
+                }
+                .padding(.horizontal, 2)
+
                 ScrollView {
                     LazyVStack(spacing: 7) {
                         ForEach(state.items) { item in
