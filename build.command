@@ -42,6 +42,7 @@ codesign --force --deep --sign - "$APP" >/dev/null
 echo
 printf "✓ 已生成：%s/%s\n" "$(pwd)" "$APP"
 echo "现在可以双击打开 Caliph Drop.app。"
+echo "若希望在 Launchpad（启动台）翻页网格中常驻显示，可将该 App 复制到“应用程序”文件夹（/Applications）。"
 echo "第一次打开后，屏幕顶部菜单栏会出现上传图标。"
 if [[ "${CALIPH_DROP_NO_OPEN:-0}" != "1" ]]; then
   open "$APP"

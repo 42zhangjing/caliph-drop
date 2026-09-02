@@ -67,15 +67,36 @@ async function createImageRecord(request, env) {
 
   const now = new Date().toISOString();
   const capturedAt = now.slice(0, 10);
-  const collectionId = crypto.randomUUID();
+  const requestedCollectionId = headerValue(request, "x-collection-id").trim();
   const mediaId = crypto.randomUUID();
   const fileName = safeFileName(headerValue(request, "x-file-name"));
   const requestedTitle = headerValue(request, "x-title").trim();
   const title = requestedTitle.slice(0, 180);
   const publish = request.headers.get("x-publish") !== "0";
   const status = publish ? "published" : "draft";
+
+  let collectionId = requestedCollectionId;
+  let isExistingCollection = false;
+  let existingItem = null;
+
+  if (requestedCollectionId) {
+    try {
+      existingItem = await env.COLLECTIONS_DB.prepare(
+        "SELECT id, slug, type, title, status, captured_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+      ).bind(requestedCollectionId).first();
+      if (existingItem?.id) {
+        isExistingCollection = true;
+        collectionId = existingItem.id;
+      }
+    } catch {}
+  }
+
+  if (!isExistingCollection) {
+    collectionId = crypto.randomUUID();
+  }
+
   const slugSeed = title || baseName(fileName) || `drop-${collectionId.slice(0, 8)}`;
-  const slug = `${slugifyCollection(slugSeed) || "drop"}-${collectionId.slice(0, 8)}`;
+  const slug = isExistingCollection ? (existingItem.slug || slugSeed) : `${slugifyCollection(slugSeed) || "drop"}-${collectionId.slice(0, 8)}`;
   const storageKey = `collections/${collectionId}/${mediaId}-${fileName}`;
 
   try {
@@ -84,34 +105,53 @@ async function createImageRecord(request, env) {
       customMetadata: { originalName: fileName, collectionId, source: "caliph-drop" },
     });
 
-    await env.COLLECTIONS_DB.prepare(
-      `INSERT INTO collections (
-        id, slug, type, title, summary, body, source_url, prompt_text,
-        metadata_json, tags_json, status, featured, captured_at, published_at,
-        created_at, updated_at, deleted_at
-      ) VALUES (?, ?, 'image', ?, '', '', '', '', ?, '[]', ?, 0, ?, ?, ?, ?, NULL)`,
-    )
-      .bind(
-        collectionId,
-        slug,
-        title,
-        JSON.stringify({ source: "caliph-drop", originalName: fileName }),
-        status,
-        capturedAt,
-        publish ? now : null,
-        now,
-        now,
-      )
-      .run();
+    if (isExistingCollection) {
+      const countRes = await env.COLLECTIONS_DB.prepare(
+        "SELECT COUNT(*) AS total FROM collection_media WHERE collection_id = ?"
+      ).bind(collectionId).first();
+      const nextSortOrder = Number(countRes?.total || 0);
 
-    await env.COLLECTIONS_DB.prepare(
-      "INSERT INTO collection_media (id, collection_id, kind, storage_key, source_url, mime_type, alt_text, poster_url, caption, sort_order, created_at) VALUES (?, ?, 'image', ?, '', ?, ?, '', '', 0, ?)",
-    )
-      .bind(mediaId, collectionId, storageKey, contentType, title, now)
-      .run();
+      await env.COLLECTIONS_DB.prepare(
+        "INSERT INTO collection_media (id, collection_id, kind, storage_key, source_url, mime_type, alt_text, poster_url, caption, sort_order, created_at) VALUES (?, ?, 'image', ?, '', ?, ?, '', '', ?, ?)"
+      )
+        .bind(mediaId, collectionId, storageKey, contentType, title, nextSortOrder, now)
+        .run();
+
+      await env.COLLECTIONS_DB.prepare(
+        "UPDATE collections SET updated_at = ? WHERE id = ?"
+      ).bind(now, collectionId).run();
+    } else {
+      await env.COLLECTIONS_DB.prepare(
+        `INSERT INTO collections (
+          id, slug, type, title, summary, body, source_url, prompt_text,
+          metadata_json, tags_json, status, featured, captured_at, published_at,
+          created_at, updated_at, deleted_at
+        ) VALUES (?, ?, 'image', ?, '', '', '', '', ?, '[]', ?, 0, ?, ?, ?, ?, NULL)`,
+      )
+        .bind(
+          collectionId,
+          slug,
+          title,
+          JSON.stringify({ source: "caliph-drop", originalName: fileName }),
+          status,
+          capturedAt,
+          publish ? now : null,
+          now,
+          now,
+        )
+        .run();
+
+      await env.COLLECTIONS_DB.prepare(
+        "INSERT INTO collection_media (id, collection_id, kind, storage_key, source_url, mime_type, alt_text, poster_url, caption, sort_order, created_at) VALUES (?, ?, 'image', ?, '', ?, ?, '', '', 0, ?)",
+      )
+        .bind(mediaId, collectionId, storageKey, contentType, title, now)
+        .run();
+    }
   } catch (error) {
     try { await env.COLLECTION_MEDIA.delete(storageKey); } catch {}
-    try { await env.COLLECTIONS_DB.prepare("DELETE FROM collections WHERE id = ?").bind(collectionId).run(); } catch {}
+    if (!isExistingCollection) {
+      try { await env.COLLECTIONS_DB.prepare("DELETE FROM collections WHERE id = ?").bind(collectionId).run(); } catch {}
+    }
     throw error;
   }
 
@@ -122,11 +162,11 @@ async function createImageRecord(request, env) {
     url: publicUrl,
     item: {
       id: collectionId,
-      slug,
+      slug: isExistingCollection ? (existingItem.slug || slug) : slug,
       type: "image",
-      title,
-      status,
-      capturedAt,
+      title: isExistingCollection ? (existingItem.title || title) : title,
+      status: isExistingCollection ? (existingItem.status || status) : status,
+      capturedAt: isExistingCollection ? (existingItem.captured_at || capturedAt) : capturedAt,
     },
     media: {
       id: mediaId,

@@ -64,19 +64,47 @@ struct UploadItem: Identifiable, Equatable {
     let sourceURL: URL
     let isRetryable: Bool
     var status: UploadItemStatus
+    let createdAt: Date
+    var customTitle: String?
+    var groupId: UUID?
+    var isGroupLeader: Bool
 
-    init(sourceURL: URL) {
+    var formattedTime: String {
+        Self.timeFormatter.string(from: createdAt)
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    init(
+        sourceURL: URL,
+        customTitle: String? = nil,
+        groupId: UUID? = nil,
+        isGroupLeader: Bool = false,
+        createdAt: Date = Date()
+    ) {
         self.id = UUID()
         self.sourceURL = sourceURL
         self.isRetryable = true
         self.status = .waiting
+        self.createdAt = createdAt
+        self.customTitle = customTitle
+        self.groupId = groupId
+        self.isGroupLeader = isGroupLeader
     }
 
-    init(failedFileName: String, reason: String) {
+    init(failedFileName: String, reason: String, createdAt: Date = Date()) {
         self.id = UUID()
         self.sourceURL = URL(fileURLWithPath: failedFileName)
         self.isRetryable = false
         self.status = .failed(reason)
+        self.createdAt = createdAt
+        self.customTitle = nil
+        self.groupId = nil
+        self.isGroupLeader = false
     }
 }
 

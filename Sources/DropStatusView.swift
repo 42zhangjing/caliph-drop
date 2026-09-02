@@ -6,7 +6,7 @@ final class DropStatusView: NSView {
     var onDragEntered: (() -> Void)?
     var onDrop: (([URL]) -> Void)?
 
-    private let hitSlop = NSEdgeInsets(top: 7, left: 8, bottom: 7, right: 8)
+    private let hitSlop = NSEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
 
     private var highlighted = false {
         didSet {

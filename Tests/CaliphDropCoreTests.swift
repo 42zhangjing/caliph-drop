@@ -45,8 +45,25 @@ private struct CaliphDropCoreTests {
         try testPrivateMetadataIsRemoved()
         try testMultiFrameImageIsRejected()
         try testEndpointValidation()
+        try testUploadItemAttributes()
         try await testUploaderContractAndErrors()
-        print("✓ Caliph Drop core tests passed (7/7)")
+        try await testUploaderCollectionIdHeader()
+        print("✓ Caliph Drop core tests passed (9/9)")
+    }
+
+    private static func testUploadItemAttributes() throws {
+        let url = URL(fileURLWithPath: "/tmp/sample.jpg")
+        let groupId = UUID()
+        let item = UploadItem(
+            sourceURL: url,
+            customTitle: "我的合辑",
+            groupId: groupId,
+            isGroupLeader: true
+        )
+        try require(item.customTitle == "我的合辑", "customTitle should match")
+        try require(item.groupId == groupId, "groupId should match")
+        try require(item.isGroupLeader == true, "isGroupLeader should be true")
+        try require(!item.formattedTime.isEmpty, "formattedTime should not be empty")
     }
 
     private static func testSupportedExtensions() throws {
@@ -189,6 +206,45 @@ private struct CaliphDropCoreTests {
         } catch let Uploader.UploadError.server(code, message) {
             try require(code == 401 && message == "Token 不正确", "server error was not normalized")
         }
+    }
+
+    private static func testUploaderCollectionIdHeader() async throws {
+        let file = temporaryURL(extension: "jpg")
+        try makeImage(at: file, width: 64, height: 64, alpha: false, includeGPS: false, type: .jpeg)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let image = ProcessedImage(
+            fileURL: file,
+            fileName: "test2.jpg",
+            mimeType: "image/jpeg",
+            originalBytes: 10,
+            outputBytes: 10,
+            width: 64,
+            height: 64
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+
+        MockURLProtocol.handler = { request in
+            try require(request.value(forHTTPHeaderField: "X-Collection-Id") == "col-12345", "X-Collection-Id header must match")
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 201, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data("{\"ok\":true,\"url\":\"https://example.test/media/2\",\"item\":{\"id\":\"col-12345\"}}".utf8))
+        }
+        let result = try await Uploader.upload(
+            image: image,
+            endpoint: "https://example.test/api/drop",
+            token: "secret",
+            title: "合辑子图",
+            publish: true,
+            collectionId: "col-12345",
+            session: session
+        )
+        try require(result.url == "https://example.test/media/2", "url should be parsed")
+        try require(result.collectionId == "col-12345", "collectionId should be parsed")
     }
 
     private static func makeImage(

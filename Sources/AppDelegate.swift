@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: 34)
+        statusItem = NSStatusBar.system.statusItem(withLength: 36)
         guard let button = statusItem.button else { return }
         button.image = nil
         button.title = ""
@@ -324,15 +324,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
 
-        // Show the actual target slightly before the cursor reaches it so AppKit has
-        // time to begin NSDraggingDestination negotiation on the next drag update.
-        let activationFrame = overlayFrame.insetBy(dx: -16, dy: -12)
+        // 判定激活区：比超大实际感应面板再向外扩展 30pt，保证光标在靠近过程中就已准备好接收拖拽
+        let activationFrame = overlayFrame.insetBy(dx: -30, dy: -30)
         if activationFrame.contains(point) {
             dragOverlay.show(frame: overlayFrame)
             return
         }
 
-        let dismissalFrame = overlayFrame.insetBy(dx: -24, dy: -18)
+        let dismissalFrame = overlayFrame.insetBy(dx: -60, dy: -50)
         if dragOverlay.isVisible, !dismissalFrame.contains(point) {
             hideDragOverlay()
         }
@@ -357,9 +356,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let frameInWindow = button.convert(button.bounds, to: nil)
         let statusFrame = window.convertToScreen(frameInWindow)
 
-        // 34pt remains the real NSStatusItem width. The transparent drag-only panel
-        // extends the physical destination without changing the visible menu-bar layout.
-        var frame = statusFrame.insetBy(dx: -9, dy: -8)
+        // 超大感应区：水平向两侧各延伸 110pt（总宽约 256pt），垂直向下延伸 75pt、向上延伸 8pt，覆盖屏幕顶部大范围区域
+        let extendedX = statusFrame.origin.x - 110
+        let extendedWidth = statusFrame.size.width + 220
+        let extendedY = statusFrame.origin.y - 75
+        let extendedHeight = statusFrame.size.height + 75 + 8
+
+        var frame = NSRect(x: extendedX, y: extendedY, width: extendedWidth, height: extendedHeight)
         if let screen = window.screen ?? NSScreen.screens.first(where: { $0.frame.intersects(statusFrame) }) {
             frame = frame.intersection(screen.frame)
         }

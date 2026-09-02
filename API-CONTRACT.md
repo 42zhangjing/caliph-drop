@@ -12,10 +12,12 @@ Content-Type: image/webp
 X-File-Name: IMG_1234.webp
 X-Title: optional-title
 X-Publish: 1
+X-Collection-Id: optional-existing-collection-id
 Accept: application/json
 ```
 
 The request body is the raw image bytes, not multipart/form-data.
+If `X-Collection-Id` is provided and exists in D1, subsequent images will be appended to the same collection item as additional media items.
 
 ## Response
 

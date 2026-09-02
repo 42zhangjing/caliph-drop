@@ -28,10 +28,13 @@ final class AppState: ObservableObject {
     @Published var items: [UploadItem] = []
     @Published var message: String = "把图片拖到顶部菜单栏的上传图标即可"
     @Published var showingSettings: Bool = false
+    @Published var pendingMultiDropURLs: [URL]? = nil
+    @Published var pendingGroupTitle: String = ""
 
     private let defaults = UserDefaults.standard
     private let tokenAccount = "caliph-drop-upload-token"
     private var uploadTask: Task<Void, Never>?
+    private var groupCollectionMap: [UUID: String] = [:]
     private var savedSettings = UploadConfiguration(
         uploadURL: "https://caliph.chengyu.dev/api/drop",
         token: "",
@@ -141,14 +144,59 @@ final class AppState: ObservableObject {
         }
 
         guard !savedSettings.token.isEmpty else {
-            items.append(contentsOf: filtered.map(UploadItem.init))
+            if filtered.count > 1 {
+                pendingMultiDropURLs = filtered
+            } else {
+                items.append(contentsOf: filtered.map { UploadItem(sourceURL: $0) })
+            }
             openSettings()
             message = "第一次使用：先填入 CALIPH_DROP_TOKEN"
             return
         }
 
-        items.append(contentsOf: filtered.map(UploadItem.init))
+        if filtered.count > 1 {
+            pendingMultiDropURLs = filtered
+            pendingGroupTitle = filtered.first?.deletingPathExtension().lastPathComponent ?? ""
+            showingSettings = false
+            return
+        }
+
+        items.append(UploadItem(sourceURL: filtered[0]))
         startQueueIfNeeded()
+    }
+
+    func confirmMultiDropSeparate() {
+        guard let urls = pendingMultiDropURLs, !urls.isEmpty else { return }
+        pendingMultiDropURLs = nil
+        items.append(contentsOf: urls.map { UploadItem(sourceURL: $0) })
+        startQueueIfNeeded()
+    }
+
+    func confirmMultiDropGroup(title: String) {
+        guard let urls = pendingMultiDropURLs, !urls.isEmpty else { return }
+        pendingMultiDropURLs = nil
+        let groupId = UUID()
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var groupItems: [UploadItem] = []
+        for (index, url) in urls.enumerated() {
+            let isLeader = (index == 0)
+            let itemTitle = isLeader ? (cleanTitle.isEmpty ? nil : cleanTitle) : nil
+            groupItems.append(
+                UploadItem(
+                    sourceURL: url,
+                    customTitle: itemTitle,
+                    groupId: groupId,
+                    isGroupLeader: isLeader
+                )
+            )
+        }
+        items.append(contentsOf: groupItems)
+        startQueueIfNeeded()
+    }
+
+    func cancelMultiDrop() {
+        pendingMultiDropURLs = nil
+        pendingGroupTitle = ""
     }
 
     func addDropFailures(_ names: [String]) {
@@ -227,8 +275,12 @@ final class AppState: ObservableObject {
 
     private func processQueue() async {
         while let index = items.firstIndex(where: { $0.status == .waiting }) {
-            let id = items[index].id
-            let sourceURL = items[index].sourceURL
+            let item = items[index]
+            let id = item.id
+            let sourceURL = item.sourceURL
+            let groupId = item.groupId
+            let isGroupLeader = item.isGroupLeader
+            let customTitle = item.customTitle
             let settings = savedSettings
             items[index].status = .processing
             message = "正在处理 \(sourceURL.lastPathComponent)…"
@@ -248,17 +300,33 @@ final class AppState: ObservableObject {
                 items[currentIndex].status = .uploading
                 message = "正在上传 \(processed.fileName)…"
 
-                let title = settings.useFilenameAsTitle
-                    ? sourceURL.deletingPathExtension().lastPathComponent
-                    : ""
+                var targetCollectionId: String? = nil
+                if let groupId = groupId, !isGroupLeader {
+                    targetCollectionId = groupCollectionMap[groupId]
+                }
+
+                let title: String
+                if let customTitle = customTitle, !customTitle.isEmpty {
+                    title = customTitle
+                } else if settings.useFilenameAsTitle {
+                    title = sourceURL.deletingPathExtension().lastPathComponent
+                } else {
+                    title = ""
+                }
 
                 let result = try await Uploader.upload(
                     image: processed,
                     endpoint: settings.uploadURL,
                     token: settings.token,
                     title: title,
-                    publish: settings.publishImmediately
+                    publish: settings.publishImmediately,
+                    collectionId: targetCollectionId
                 )
+
+                if let groupId = groupId, isGroupLeader, let returnedId = result.collectionId {
+                    groupCollectionMap[groupId] = returnedId
+                }
+
                 guard let finishedIndex = items.firstIndex(where: { $0.id == id }) else { continue }
                 items[finishedIndex].status = .done(result.url)
 

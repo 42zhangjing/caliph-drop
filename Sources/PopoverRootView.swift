@@ -12,6 +12,8 @@ struct PopoverRootView: View {
 
             if state.showingSettings {
                 SettingsView(state: state)
+            } else if let urls = state.pendingMultiDropURLs, !urls.isEmpty {
+                MultiDropConfirmView(state: state, urls: urls)
             } else {
                 UploadView(state: state)
             }
@@ -35,17 +37,180 @@ struct PopoverRootView: View {
             Button {
                 if state.showingSettings {
                     state.closeSettings()
+                } else if state.pendingMultiDropURLs != nil {
+                    state.cancelMultiDrop()
                 } else {
                     state.openSettings()
                 }
             } label: {
-                Image(systemName: state.showingSettings ? "xmark" : "gearshape")
+                Image(systemName: state.showingSettings || state.pendingMultiDropURLs != nil ? "xmark" : "gearshape")
             }
             .buttonStyle(.plain)
-            .help(state.showingSettings ? "返回" : "设置")
+            .help(state.showingSettings ? "返回" : (state.pendingMultiDropURLs != nil ? "取消多图导入" : "设置"))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+}
+
+private struct MultiDropConfirmView: View {
+    @ObservedObject var state: AppState
+    let urls: [URL]
+    @State private var selectedMode: MultiDropMode = .separate
+
+    enum MultiDropMode {
+        case separate
+        case group
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("检测到 \(urls.count) 张图片")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("请选择多张图片的收录方式")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("取消") {
+                    state.cancelMultiDrop()
+                }
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 4)
+
+            // 预览列表
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(urls, id: \.self) { url in
+                        VStack(spacing: 4) {
+                            if let nsImage = NSImage(contentsOf: url) {
+                                Image(nsImage: nsImage)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 58, height: 58)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.secondary.opacity(0.15))
+                                    .frame(width: 58, height: 58)
+                                    .overlay(
+                                        Image(systemName: "photo")
+                                            .foregroundStyle(.secondary)
+                                    )
+                            }
+                            Text(url.lastPathComponent)
+                                .font(.system(size: 9))
+                                .lineLimit(1)
+                                .frame(width: 62)
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .frame(height: 84)
+
+            Divider()
+
+            VStack(spacing: 10) {
+                // 选项 A：分别收录
+                Button {
+                    selectedMode = .separate
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: selectedMode == .separate ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(selectedMode == .separate ? Color.accentColor : Color.secondary)
+                            .font(.system(size: 14))
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("分别独立收录（推荐）")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("每张图片各创建一条独立的图库记录")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(selectedMode == .separate ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(selectedMode == .separate ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                // 选项 B：合并为一条
+                Button {
+                    selectedMode = .group
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: selectedMode == .group ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(selectedMode == .group ? Color.accentColor : Color.secondary)
+                            .font(.system(size: 14))
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("合并为一条记录（图集合辑）")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("所有图片归入同一条图库记录的媒体列表中")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(selectedMode == .group ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(selectedMode == .group ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                if selectedMode == .group {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("合辑标题（选填）")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        TextField("默认为第一张图片文件名", text: $state.pendingGroupTitle)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                    }
+                    .padding(.top, 2)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+
+            Spacer()
+
+            HStack {
+                Button("取消") {
+                    state.cancelMultiDrop()
+                }
+                .controlSize(.regular)
+                Spacer()
+                Button(selectedMode == .separate ? "分别收录并上传 (\(urls.count)张)" : "合并收录并上传 (\(urls.count)张)") {
+                    if selectedMode == .separate {
+                        state.confirmMultiDropSeparate()
+                    } else {
+                        state.confirmMultiDropGroup(title: state.pendingGroupTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .animation(.easeInOut(duration: 0.15), value: selectedMode)
     }
 }
 
@@ -76,32 +241,34 @@ private struct UploadView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 Image(systemName: isDropTargeted ? "arrow.down.circle.fill" : "photo.stack")
-                    .font(.system(size: 34, weight: .light))
+                    .font(.system(size: 40, weight: .light))
                     .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
                 Text(isDropTargeted ? "松开即可上传" : "把图片拖到这里或顶部 Caliph 图标")
                     .font(.system(size: 13, weight: .semibold))
-                Text("也可以从这里选择；支持一次多张")
+                Text("支持单张或多张拖入；也可点击下方按钮选择")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Button("选择图片上传") { state.chooseImages() }
-                    .controlSize(.small)
+                    .controlSize(.regular)
+                    .padding(.top, 2)
             }
             .frame(maxWidth: .infinity)
+            .frame(minHeight: state.items.isEmpty ? 200 : 175)
             .padding(.vertical, 16)
             .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(isDropTargeted ? Color.accentColor.opacity(0.09) : Color.clear)
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.04))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 14)
                     .strokeBorder(
-                        isDropTargeted ? Color.accentColor : Color.primary.opacity(0.32),
-                        style: StrokeStyle(lineWidth: isDropTargeted ? 1.5 : 1, dash: [5, 5])
+                        isDropTargeted ? Color.accentColor : Color.primary.opacity(0.28),
+                        style: StrokeStyle(lineWidth: isDropTargeted ? 2.0 : 1.2, dash: [6, 6])
                     )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers)
             }
@@ -207,20 +374,36 @@ private struct UploadRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
+                .foregroundStyle(iconColor)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.sourceURL.lastPathComponent)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(item.sourceURL.lastPathComponent)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    if let _ = item.groupId {
+                        Text(item.isGroupLeader ? "合辑主图" : "合辑附图")
+                            .font(.system(size: 8, weight: .medium))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
                 Text(detail)
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
-            Text(item.status.label)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(item.status.label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(statusColor)
+                Text(item.formattedTime)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary.opacity(0.75))
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -234,6 +417,24 @@ private struct UploadRow: View {
         case .uploading: return "arrow.up.circle"
         case .done: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var iconColor: Color {
+        switch item.status {
+        case .waiting: return .secondary
+        case .processing, .uploading: return .accentColor
+        case .done: return .green
+        case .failed: return .red
+        }
+    }
+
+    private var statusColor: Color {
+        switch item.status {
+        case .waiting: return .secondary
+        case .processing, .uploading: return .accentColor
+        case .done: return .green
+        case .failed: return .red
         }
     }
 

@@ -2,6 +2,7 @@ import Foundation
 
 struct UploadResult {
     let url: String?
+    let collectionId: String?
 }
 
 struct Uploader {
@@ -29,6 +30,7 @@ struct Uploader {
         token: String,
         title: String,
         publish: Bool,
+        collectionId: String? = nil,
         session: URLSession = .shared
     ) async throws -> UploadResult {
         guard let url = UploadEndpoint.url(from: endpoint) else {
@@ -47,6 +49,9 @@ struct Uploader {
         request.setValue(percentEncodeHeader(image.fileName), forHTTPHeaderField: "X-File-Name")
         request.setValue(percentEncodeHeader(title), forHTTPHeaderField: "X-Title")
         request.setValue(publish ? "1" : "0", forHTTPHeaderField: "X-Publish")
+        if let collectionId = collectionId?.trimmingCharacters(in: .whitespacesAndNewlines), !collectionId.isEmpty {
+            request.setValue(collectionId, forHTTPHeaderField: "X-Collection-Id")
+        }
         if let width = image.width {
             request.setValue("\(width)", forHTTPHeaderField: "X-Media-Width")
         }
@@ -65,7 +70,10 @@ struct Uploader {
               json["ok"] as? Bool != false,
               let publicURL = json["url"] as? String,
               !publicURL.isEmpty else { throw UploadError.invalidResponse }
-        return UploadResult(url: publicURL)
+
+        let itemDict = json["item"] as? [String: Any]
+        let returnedCollectionId = itemDict?["id"] as? String
+        return UploadResult(url: publicURL, collectionId: returnedCollectionId)
     }
 
     private static func percentEncodeHeader(_ value: String) -> String {
