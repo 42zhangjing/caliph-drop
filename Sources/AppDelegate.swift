@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var dragLocalEventMonitor: Any?
     private var dragGlobalEventMonitor: Any?
     private var popoverCloseWorkItem: DispatchWorkItem?
+    private var dragHideWorkItem: DispatchWorkItem?
     private var isClosingPopover = false
 
     private static let popoverOpenDuration: TimeInterval = 0.11
@@ -30,11 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func setupPopover() {
-        popover.behavior = .transient
+        // The file chooser is presented as a sheet from this window. Let the app
+        // own dismissal so opening the chooser does not make the upload panel vanish.
+        popover.behavior = .applicationDefined
         // NSPopover's stock animation feels intentionally soft/slow. We disable it and
         // run a much shorter fade + micro-scale transition ourselves.
         popover.animates = false
-        popover.contentSize = NSSize(width: 390, height: 560)
+        popover.contentSize = NSSize(width: 416, height: 570)
         popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: PopoverRootView(state: state))
     }
@@ -81,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         dragOverlay.dropView.onDrop = { [weak self, weak dropView] urls in
             guard let self else { return }
+            self.dragHideWorkItem?.cancel()
             dropView?.setExternalDragHighlighted(false)
             self.dragOverlay.hide()
             self.showPopover(activateApp: false)
@@ -97,6 +101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if !popover.isShown {
             popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+            state.hostWindow = popover.contentViewController?.view.window
+            state.presentPanel = { [weak self] in self?.showPopover(activateApp: true) }
             installEventMonitors()
             animatePopoverOpen()
         } else {
@@ -141,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func closePopoverFast() {
         guard popover.isShown else { return }
+        guard !state.isChoosingImages else { return }
         guard !isClosingPopover else { return }
 
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -235,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         popoverCloseWorkItem?.cancel()
+        dragHideWorkItem?.cancel()
         removeEventMonitors()
         removeDragOverlayMonitors()
         dragOverlay.hide()
@@ -252,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 return nil
             }
             if event.type == .leftMouseDown || event.type == .rightMouseDown {
+                if self.state.isChoosingImages { return event }
                 let point = NSEvent.mouseLocation
                 if !self.containsInPopover(point) && !self.containsInStatusItem(point) {
                     self.closePopoverFast()
@@ -264,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
             Task { @MainActor in
+                guard self?.state.isChoosingImages != true else { return }
                 self?.closePopoverFast()
             }
         }
@@ -314,7 +324,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func handleDragTracking(eventType: NSEvent.EventType, point: NSPoint) {
         if eventType == .leftMouseUp {
-            hideDragOverlay()
+            // AppKit can deliver mouse-up just before performDragOperation.
+            // Keep the target alive for one run-loop turn so a valid drop is
+            // not removed underneath the cursor.
+            dragHideWorkItem?.cancel()
+            let hide = DispatchWorkItem { [weak self] in
+                Task { @MainActor in self?.hideDragOverlay() }
+            }
+            dragHideWorkItem = hide
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: hide)
             return
         }
 
@@ -327,6 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // 判定激活区：比超大实际感应面板再向外扩展 30pt，保证光标在靠近过程中就已准备好接收拖拽
         let activationFrame = overlayFrame.insetBy(dx: -30, dy: -30)
         if activationFrame.contains(point) {
+            dragHideWorkItem?.cancel()
             dragOverlay.show(frame: overlayFrame)
             return
         }
@@ -338,6 +357,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func hideDragOverlay() {
+        dragHideWorkItem?.cancel()
+        dragHideWorkItem = nil
         dragOverlay.hide()
         dropStatusView?.setExternalDragHighlighted(false)
     }
@@ -384,12 +405,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if items.contains(where: {
             switch $0.status {
             case .processing, .uploading: return true
-            case .waiting, .done, .failed: return false
+            case .waiting, .blocked, .uncertain, .cancelled, .done, .failed: return false
             }
         }) {
             return .working
         }
-        if items.contains(where: { if case .failed = $0.status { return true }; return false }) {
+        if items.contains(where: {
+            switch $0.status {
+            case .failed, .uncertain, .blocked: return true
+            default: return false
+            }
+        }) {
             return .failed
         }
         if items.contains(where: { if case .done = $0.status { return true }; return false }) {
