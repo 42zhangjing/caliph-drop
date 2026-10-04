@@ -13,7 +13,16 @@ APP="Caliph Drop.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-SDK="$(xcrun --sdk macosx --show-sdk-path)"
+# Command Line Tools 27.0 currently exposes SwiftUI macros without their
+# plugin bundle. Prefer the installed 26.5 SDK when available and fall back to
+# the active macOS SDK on machines that do not have it.
+if [[ -n "${CALIPH_DROP_SDK:-}" ]]; then
+  SDK="$(xcrun --sdk "$CALIPH_DROP_SDK" --show-sdk-path)"
+elif [[ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" ]]; then
+  SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+else
+  SDK="$(xcrun --sdk macosx --show-sdk-path)"
+fi
 ARCH="$(uname -m)"
 
 echo "正在构建 Caliph Drop ($ARCH)…"

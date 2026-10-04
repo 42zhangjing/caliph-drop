@@ -225,14 +225,16 @@ private struct CaliphDropCoreTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         let session = URLSession(configuration: configuration)
+        let uploadID = UUID(uuidString: "A7B3E3A8-60AD-4F6B-9D45-3B0B9624D9A1")!
 
         MockURLProtocol.handler = { request in
             try require(request.value(forHTTPHeaderField: "X-Collection-Id") == "col-12345", "X-Collection-Id header must match")
+            try require(request.value(forHTTPHeaderField: "X-Upload-Id") == uploadID.uuidString.lowercased(), "X-Upload-Id header must be stable")
             let response = HTTPURLResponse(
                 url: request.url!, statusCode: 201, httpVersion: nil,
                 headerFields: ["Content-Type": "application/json"]
             )!
-            return (response, Data("{\"ok\":true,\"url\":\"https://example.test/media/2\",\"item\":{\"id\":\"col-12345\"}}".utf8))
+            return (response, Data("{\"ok\":true,\"url\":\"https://example.test/media/2\",\"item\":{\"id\":\"col-12345\",\"status\":\"draft\",\"needsReview\":true,\"slug\":\"draft-title\"}}".utf8))
         }
         let result = try await Uploader.upload(
             image: image,
@@ -241,10 +243,12 @@ private struct CaliphDropCoreTests {
             title: "合辑子图",
             publish: true,
             collectionId: "col-12345",
+            uploadId: uploadID,
             session: session
         )
         try require(result.url == "https://example.test/media/2", "url should be parsed")
         try require(result.collectionId == "col-12345", "collectionId should be parsed")
+        try require(result.publicationStatus == "draft" && result.needsReview && result.slug == "draft-title", "publication metadata should be parsed")
     }
 
     private static func makeImage(

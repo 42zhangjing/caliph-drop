@@ -75,6 +75,7 @@ final class DragOverlayView: NSView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard !imageURLs(from: sender.draggingPasteboard).isEmpty else { return [] }
         highlighted = true
+        needsDisplay = true
         onDragEntered?()
         return .copy
     }
@@ -107,6 +108,44 @@ final class DragOverlayView: NSView {
     func resetHighlight() {
         guard highlighted else { return }
         highlighted = false
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard !bounds.isEmpty else { return }
+
+        let rect = bounds.insetBy(dx: 6, dy: 6)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14)
+        NSColor.windowBackgroundColor.withAlphaComponent(highlighted ? 0.96 : 0.88).setFill()
+        path.fill()
+        NSColor.systemBlue.withAlphaComponent(highlighted ? 0.95 : 0.7).setStroke()
+        path.lineWidth = highlighted ? 2 : 1
+        if !highlighted { path.setLineDash([5, 4], count: 2, phase: 0) }
+        path.stroke()
+
+        let symbolName = highlighted ? "arrow.down.circle.fill" : "arrow.down.circle"
+        if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+            let symbolSize = min(24, max(18, rect.height - 28))
+            let symbolRect = NSRect(x: rect.minX + 14, y: rect.midY - symbolSize / 2,
+                                    width: symbolSize, height: symbolSize)
+            image.draw(in: symbolRect, from: .zero, operation: .sourceOver, fraction: 1)
+        }
+
+        let title = highlighted ? "松开上传图片" : "拖到这里上传"
+        let subtitle = "Caliph Drop"
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: NSColor.labelColor
+        ]
+        let subtitleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        let textX = rect.minX + 48
+        let titleSize = title.size(withAttributes: titleAttributes)
+        title.draw(at: NSPoint(x: textX, y: rect.midY - 2), withAttributes: titleAttributes)
+        subtitle.draw(at: NSPoint(x: textX, y: rect.midY - titleSize.height - 1), withAttributes: subtitleAttributes)
     }
 
     private func imageURLs(from pasteboard: NSPasteboard) -> [URL] {

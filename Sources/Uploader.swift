@@ -1,10 +1,5 @@
 import Foundation
 
-struct UploadResult {
-    let url: String?
-    let collectionId: String?
-}
-
 struct Uploader {
     enum UploadError: LocalizedError {
         case invalidEndpoint
@@ -31,6 +26,7 @@ struct Uploader {
         title: String,
         publish: Bool,
         collectionId: String? = nil,
+        uploadId: UUID? = nil,
         session: URLSession = .shared
     ) async throws -> UploadResult {
         guard let url = UploadEndpoint.url(from: endpoint) else {
@@ -58,6 +54,7 @@ struct Uploader {
         if let height = image.height {
             request.setValue("\(height)", forHTTPHeaderField: "X-Media-Height")
         }
+        if let uploadId { request.setValue(uploadId.uuidString.lowercased(), forHTTPHeaderField: "X-Upload-Id") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await session.upload(for: request, fromFile: image.fileURL)
         guard let http = response as? HTTPURLResponse else { throw UploadError.invalidResponse }
@@ -73,7 +70,10 @@ struct Uploader {
 
         let itemDict = json["item"] as? [String: Any]
         let returnedCollectionId = itemDict?["id"] as? String
-        return UploadResult(url: publicURL, collectionId: returnedCollectionId)
+        return UploadResult(url: publicURL, collectionId: returnedCollectionId,
+                            publicationStatus: itemDict?["status"] as? String,
+                            needsReview: itemDict?["needsReview"] as? Bool ?? false,
+                            slug: itemDict?["slug"] as? String)
     }
 
     private static func percentEncodeHeader(_ value: String) -> String {

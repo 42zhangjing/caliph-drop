@@ -2,533 +2,336 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct PopoverRootView: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-
-            if state.showingSettings {
-                SettingsView(state: state)
-            } else if let urls = state.pendingMultiDropURLs, !urls.isEmpty {
-                MultiDropConfirmView(state: state, urls: urls)
-            } else {
-                UploadView(state: state)
-            }
-        }
-        .frame(width: 390, height: 560)
-        .background(.regularMaterial)
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "arrow.up.circle.fill")
-                .font(.system(size: 20, weight: .semibold))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("CALIPH DROP")
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                Text("Drag · Compress · Upload")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                if state.showingSettings {
-                    state.closeSettings()
-                } else if state.pendingMultiDropURLs != nil {
-                    state.cancelMultiDrop()
-                } else {
-                    state.openSettings()
-                }
-            } label: {
-                Image(systemName: state.showingSettings || state.pendingMultiDropURLs != nil ? "xmark" : "gearshape")
-            }
-            .buttonStyle(.plain)
-            .help(state.showingSettings ? "返回" : (state.pendingMultiDropURLs != nil ? "取消多图导入" : "设置"))
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
+private enum DropStyle {
+    static let background = Color(nsColor: .windowBackgroundColor)
+    static let surface = Color(nsColor: .controlBackgroundColor)
+    static let border = Color(nsColor: .separatorColor).opacity(0.55)
+    static let accent = Color(nsColor: .systemBlue)
 }
 
-private struct MultiDropConfirmView: View {
+struct PopoverRootView: View {
     @ObservedObject var state: AppState
-    let urls: [URL]
-    @State private var selectedMode: MultiDropMode = .separate
-
-    enum MultiDropMode {
-        case separate
-        case group
-    }
-
     var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("检测到 \(urls.count) 张图片")
-                        .font(.system(size: 14, weight: .bold))
-                    Text("请选择多张图片的收录方式")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("CALIPH DROP").font(.system(size: 14, weight: .bold, design: .rounded)).tracking(0.7)
+                    Text(state.showingSettings ? "设置" : "图片上传 · 本机压缩")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("取消") {
-                    state.cancelMultiDrop()
+                Text("0.5").font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                Button {
+                    if state.showingSettings { state.closeSettings() } else { state.openSettings() }
+                } label: {
+                    Image(systemName: state.showingSettings ? "arrow.left" : "gearshape")
+                        .font(.system(size: 14)).frame(width: 32, height: 32).contentShape(Rectangle())
                 }
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .help(state.showingSettings ? "返回，保留未保存的设置" : "设置")
+                .accessibilityLabel(state.showingSettings ? "返回上传" : "打开设置")
             }
-            .padding(.horizontal, 4)
-
-            // 预览列表
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(urls, id: \.self) { url in
-                        VStack(spacing: 4) {
-                            if let nsImage = NSImage(contentsOf: url) {
-                                Image(nsImage: nsImage)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 58, height: 58)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                            } else {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.secondary.opacity(0.15))
-                                    .frame(width: 58, height: 58)
-                                    .overlay(
-                                        Image(systemName: "photo")
-                                            .foregroundStyle(.secondary)
-                                    )
-                            }
-                            Text(url.lastPathComponent)
-                                .font(.system(size: 9))
-                                .lineLimit(1)
-                                .frame(width: 62)
-                        }
-                    }
-                }
-                .padding(.horizontal, 2)
-            }
-            .frame(height: 84)
-
+            .padding(.horizontal, 18).padding(.vertical, 14)
             Divider()
-
-            VStack(spacing: 10) {
-                // 选项 A：分别收录
-                Button {
-                    selectedMode = .separate
-                } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: selectedMode == .separate ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(selectedMode == .separate ? Color.accentColor : Color.secondary)
-                            .font(.system(size: 14))
-                            .padding(.top, 2)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("分别独立收录（推荐）")
-                                .font(.system(size: 12, weight: .semibold))
-                            Text("每张图片各创建一条独立的图库记录")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(selectedMode == .separate ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(selectedMode == .separate ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-
-                // 选项 B：合并为一条
-                Button {
-                    selectedMode = .group
-                } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: selectedMode == .group ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(selectedMode == .group ? Color.accentColor : Color.secondary)
-                            .font(.system(size: 14))
-                            .padding(.top, 2)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("合并为一条记录（图集合辑）")
-                                .font(.system(size: 12, weight: .semibold))
-                            Text("所有图片归入同一条图库记录的媒体列表中")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(selectedMode == .group ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(selectedMode == .group ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-
-                if selectedMode == .group {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("合辑标题（选填）")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        TextField("默认为第一张图片文件名", text: $state.pendingGroupTitle)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11))
-                    }
-                    .padding(.top, 2)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-
-            Spacer()
-
-            HStack {
-                Button("取消") {
-                    state.cancelMultiDrop()
-                }
-                .controlSize(.regular)
-                Spacer()
-                Button(selectedMode == .separate ? "分别收录并上传 (\(urls.count)张)" : "合并收录并上传 (\(urls.count)张)") {
-                    if selectedMode == .separate {
-                        state.confirmMultiDropSeparate()
-                    } else {
-                        state.confirmMultiDropGroup(title: state.pendingGroupTitle)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .keyboardShortcut(.defaultAction)
-            }
+            if state.showingSettings { SettingsView(state: state) }
+            else if let pending = state.pendingImports.first { ImportReview(state: state, pending: pending) }
+            else { UploadView(state: state) }
         }
-        .padding(16)
-        .animation(.easeInOut(duration: 0.15), value: selectedMode)
+        .frame(width: 416, height: 570)
+        .background(DropStyle.background)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DropStyle.border, lineWidth: 1))
+        .tint(DropStyle.accent)
     }
 }
 
 private struct UploadView: View {
     @ObservedObject var state: AppState
-    @State private var isDropTargeted = false
-
-    private var completedCount: Int {
-        state.items.reduce(into: 0) { count, item in
-            if case .done = item.status {
-                count += 1
-            }
-        }
+    @State private var targeted = false
+    private var batch: [UploadItem] { state.currentBatch }
+    private var finished: Int { batch.filter { $0.status.isFinished }.count }
+    private var failed: Int { batch.filter { $0.status.canRetry }.count }
+    private var displayed: [UploadItem] {
+        state.items.filter { $0.batchId == state.latestBatchId } + state.items.filter { $0.batchId != state.latestBatchId }
     }
-
-    private var failedCount: Int {
-        state.items.reduce(into: 0) { count, item in
-            if case .failed = item.status {
-                count += 1
-            }
-        }
-    }
-
-    private var progressValue: Double {
-        guard !state.items.isEmpty else { return 0 }
-        return Double(completedCount) / Double(state.items.count)
-    }
-
     var body: some View {
         VStack(spacing: 12) {
-            VStack(spacing: 10) {
-                Image(systemName: isDropTargeted ? "arrow.down.circle.fill" : "photo.stack")
-                    .font(.system(size: 40, weight: .light))
-                    .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
-                Text(isDropTargeted ? "松开即可上传" : "把图片拖到这里或顶部 Caliph 图标")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("支持单张或多张拖入；也可点击下方按钮选择")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Button("选择图片上传") { state.chooseImages() }
-                    .controlSize(.regular)
-                    .padding(.top, 2)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: state.items.isEmpty ? 200 : 175)
-            .padding(.vertical, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(
-                        isDropTargeted ? Color.accentColor : Color.primary.opacity(0.28),
-                        style: StrokeStyle(lineWidth: isDropTargeted ? 2.0 : 1.2, dash: [6, 6])
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14))
-            .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
-                handleDrop(providers)
-            }
-
+            dropZone
             if state.items.isEmpty {
-                Spacer()
-                VStack(spacing: 5) {
-                    Image(systemName: "bolt.horizontal.circle")
-                        .foregroundStyle(.secondary)
-                    Text("日常只需要一个动作：拖上去")
-                        .font(.system(size: 12, weight: .medium))
-                    Text("图片会先在本机压缩，再发送到你的上传 API")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                VStack(spacing: 8) {
+                    Text("把图片放进来，剩下的交给 Drop")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("支持 Finder 文件与粘贴图片\n多张图片可分别收录，也可合并为图集")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center).lineSpacing(4)
                 }
-                Spacer()
+                Spacer(minLength: 0)
             } else {
-                VStack(spacing: 7) {
-                    HStack(spacing: 8) {
-                        Text("\(completedCount) / \(state.items.count) 完成")
-                            .font(.system(size: 10, weight: .semibold))
-                        if failedCount > 0 {
-                            Text("· \(failedCount) 失败")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("本批次 \(finished) / \(batch.count) 已处理").font(.system(size: 12, weight: .medium))
+                        if failed > 0 { Text("\(failed) 项需处理").font(.system(size: 11)).foregroundStyle(.orange) }
+                        Spacer()
+                        if state.items.contains(where: { !$0.status.isFinished }) {
+                            Button(state.isPaused ? "继续" : "暂停") { state.togglePause() }.controlSize(.small)
+                        }
+                    }
+                    ProgressView(value: Double(finished), total: Double(max(1, batch.count)))
+                        .controlSize(.small).accessibilityLabel("当前批次处理进度")
+                    if state.isPaused {
+                        Text("队列已暂停；正在发送的任务会先完成")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(displayed) { item in UploadRow(state: state, item: item) }
+                    }.padding(.vertical, 1)
+                }
+            }
+            Spacer(minLength: 0).frame(height: 0)
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text(state.message).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                    .help(state.message)
+                if !state.items.isEmpty {
+                    HStack(spacing: 10) {
+                        if state.items.contains(where: { $0.isRetryable && $0.status.canRetry }) {
+                            Button("重试未完成") { state.retryFailed() }.controlSize(.small)
                         }
                         Spacer()
-                    }
-
-                    ProgressView(value: progressValue)
-                        .progressViewStyle(.linear)
-                        .controlSize(.small)
-                        .animation(.easeOut(duration: 0.18), value: progressValue)
-                }
-                .padding(.horizontal, 2)
-
-                ScrollView {
-                    LazyVStack(spacing: 7) {
-                        ForEach(state.items) { item in
-                            UploadRow(item: item)
-                        }
+                        Button("清理成功项") { state.clearFinished() }.controlSize(.small)
+                            .help("保留失败与未完成任务")
                     }
                 }
             }
-
-            Divider()
-            HStack(spacing: 8) {
-                Text(state.message)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer()
-                if state.items.contains(where: {
-                    guard $0.isRetryable else { return false }
-                    if case .failed = $0.status { return true }
-                    return false
-                }) {
-                    Button("重试") { state.retryFailed() }
-                        .controlSize(.mini)
-                }
-                if !state.items.isEmpty {
-                    Button("清理") { state.clearFinished() }
-                        .controlSize(.mini)
-                }
-            }
-        }
-        .padding(14)
+        }.padding(16)
     }
-
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        let fileProviders = providers.filter { $0.canLoadObject(ofClass: NSURL.self) }
-        guard !fileProviders.isEmpty else { return false }
-
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var loaded = Array<URL?>(repeating: nil, count: fileProviders.count)
-        var failedNames = Array<String?>(repeating: nil, count: fileProviders.count)
-
-        for (index, provider) in fileProviders.enumerated() {
-            group.enter()
-            provider.loadObject(ofClass: NSURL.self) { object, error in
-                lock.lock()
-                if let url = object as? URL, error == nil {
-                    loaded[index] = url
-                } else {
-                    failedNames[index] = provider.suggestedName ?? "无法读取的文件 \(index + 1)"
+    private var dropZone: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: targeted ? "arrow.down.doc" : "photo.on.rectangle.angled")
+                    .font(.system(size: state.items.isEmpty ? 30 : 23, weight: .light))
+                    .foregroundStyle(targeted ? DropStyle.accent : .secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(targeted ? "松开导入图片" : "拖入图片")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("也可直接粘贴 ⌘V").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-                lock.unlock()
-                group.leave()
+                Spacer()
+                Button("选择图片") { state.chooseImages() }.controlSize(.regular)
+            }
+            if state.items.isEmpty {
+                HStack {
+                    Text("JPG · PNG · HEIC · WebP · AVIF · TIFF")
+                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("粘贴图片") { state.pasteImages() }.buttonStyle(.link).font(.system(size: 12))
+                }.padding(.top, 12)
             }
         }
-        group.notify(queue: .main) {
-            state.enqueue(urls: loaded.compactMap { $0 })
-            state.addDropFailures(failedNames.compactMap { $0 })
+        .padding(16).frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 11).fill(targeted ? DropStyle.accent.opacity(0.08) : DropStyle.surface))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(targeted ? DropStyle.accent : DropStyle.border,
+            style: StrokeStyle(lineWidth: targeted ? 1.5 : 1, dash: targeted ? [] : [4, 4])))
+        .contentShape(Rectangle())
+        .onDrop(of: [UTType.fileURL.identifier, UTType.png.identifier, UTType.tiff.identifier], isTargeted: $targeted) {
+            ImageImport.load($0, into: state)
         }
-        return true
     }
 }
 
 private struct UploadRow: View {
+    @ObservedObject var state: AppState
     let item: UploadItem
-
+    @State private var expanded = false
+    private var color: Color {
+        switch item.status {
+        case .done: return item.result?.publicationStatus == "published" ? .green : .secondary
+        case .failed, .uncertain, .blocked: return .orange
+        case .processing, .uploading: return DropStyle.accent
+        default: return .secondary
+        }
+    }
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .foregroundStyle(iconColor)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(item.sourceURL.lastPathComponent)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                    if let _ = item.groupId {
-                        Text(item.isGroupLeader ? "合辑主图" : "合辑附图")
-                            .font(.system(size: 8, weight: .medium))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.12)))
-                            .foregroundStyle(Color.accentColor)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 11) {
+                ImageThumbnail(url: item.sourceURL).frame(width: 48, height: 48)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.sourceURL.lastPathComponent).font(.system(size: 12, weight: .medium))
+                        .lineLimit(1).truncationMode(.middle).help(item.sourceURL.lastPathComponent)
+                    HStack(spacing: 5) {
+                        if item.status.isActive { ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 12, height: 12) }
+                        Text(item.resultLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(color)
+                        if item.groupId != nil {
+                            Text(item.isGroupLeader ? "· 主图" : "· 附图").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(item.processed?.sizeSummary ?? item.timeLabel)
+                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Menu {
+                    if item.result?.url != nil {
+                        Button("复制图片链接") { state.copyURL(item) }
+                        Button("打开图片") { state.openResult(item) }
+                    }
+                    if item.isRetryable && item.status.canRetry { Button("重试任务") { state.retryItem(item.id) } }
+                    if !item.status.isActive, !(item.status == .cancelled) {
+                        if case .done = item.status {} else { Button("取消任务") { state.cancelItem(item.id) } }
+                    }
+                    Button(expanded ? "收起详情" : "查看详情") { expanded.toggle() }
+                } label: { Image(systemName: "ellipsis").frame(width: 28, height: 28) }
+                .menuStyle(.borderlessButton).frame(width: 28)
+                .accessibilityLabel("\(item.sourceURL.lastPathComponent)的操作")
+            }
+            if let error = item.status.error {
+                Button { expanded.toggle() } label: {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.circle")
+                        Text(error).lineLimit(expanded ? nil : 2).multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    }.font(.system(size: 11)).foregroundStyle(.orange)
+                }.buttonStyle(.plain)
+            }
+            if expanded {
+                Text(item.timeLabel).font(.system(size: 11)).foregroundStyle(.secondary)
+                if let value = item.result?.url { Text(value).font(.system(size: 11)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+                if item.result?.needsReview == true {
+                    Text("图片已保存为草稿，请到网站管理端补充标题后发布。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(11).frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(DropStyle.surface))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DropStyle.border.opacity(0.65), lineWidth: 0.5))
+    }
+}
+
+private struct ImportReview: View {
+    @ObservedObject var state: AppState
+    let pending: PendingImport
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("准备上传 \(pending.urls.count) 张图片").font(.system(size: 16, weight: .semibold))
+                    Text(state.pendingImports.count > 1 ? "另有 \(state.pendingImports.count - 1) 批图片等待确认" : "检查图片与顺序，再选择收录方式")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            ScrollView {
+                LazyVStack(spacing: 7) {
+                    ForEach(Array(pending.urls.enumerated()), id: \.element) { index, url in
+                        HStack(spacing: 10) {
+                            ImageThumbnail(url: url).frame(width: 46, height: 42)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(url.lastPathComponent).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                                Text(pending.grouped && index == 0 ? "合辑主图" : "第 \(index + 1) 张").font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Button { state.movePending(url, by: -1) } label: { Image(systemName: "chevron.up").frame(width: 24, height: 28) }
+                                .disabled(index == 0).help("向前移动").accessibilityLabel("向前移动图片")
+                            Button { state.movePending(url, by: 1) } label: { Image(systemName: "chevron.down").frame(width: 24, height: 28) }
+                                .disabled(index == pending.urls.count - 1).help("向后移动").accessibilityLabel("向后移动图片")
+                            Button { state.removePending(url) } label: { Image(systemName: "minus.circle").frame(width: 24, height: 28) }
+                                .help("从本批次移除").accessibilityLabel("移除图片")
+                        }.buttonStyle(.plain).padding(8)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(DropStyle.surface))
                     }
                 }
-                Text(detail)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(item.status.label)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(statusColor)
-                Text(item.formattedTime)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary.opacity(0.75))
+            Picker("收录方式", selection: Binding(get: { state.pendingGrouped }, set: { state.pendingGrouped = $0 })) {
+                Text("分别收录").tag(false)
+                Text("合并为图集").tag(true)
+            }.pickerStyle(.segmented)
+            if pending.grouped {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("图集标题").font(.system(size: 12, weight: .medium))
+                    TextField("可留空，由网站补充", text: Binding(get: { state.pendingGroupTitle }, set: { state.pendingGroupTitle = $0 }))
+                        .textFieldStyle(.roundedBorder).font(.system(size: 13))
+                    Text("第一张为主图，后续图片按上方顺序加入。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("每张图片分别创建一条图库记录。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
             }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 9).fill(.secondary.opacity(0.07)))
-    }
-
-    private var icon: String {
-        switch item.status {
-        case .waiting: return "clock"
-        case .processing: return "wand.and.stars"
-        case .uploading: return "arrow.up.circle"
-        case .done: return "checkmark.circle.fill"
-        case .failed: return "exclamationmark.triangle.fill"
-        }
-    }
-
-    private var iconColor: Color {
-        switch item.status {
-        case .waiting: return .secondary
-        case .processing, .uploading: return .accentColor
-        case .done: return .green
-        case .failed: return .red
-        }
-    }
-
-    private var statusColor: Color {
-        switch item.status {
-        case .waiting: return .secondary
-        case .processing, .uploading: return .accentColor
-        case .done: return .green
-        case .failed: return .red
-        }
-    }
-
-    private var detail: String {
-        switch item.status {
-        case .waiting: return "等待处理"
-        case .processing: return "正在缩小尺寸并重新编码"
-        case .uploading: return "正在发送到网站"
-        case let .done(url): return url ?? "上传成功"
-        case let .failed(reason): return reason
-        }
+            Divider()
+            HStack {
+                Button("取消这批") { state.cancelMultiDrop() }
+                Spacer()
+                Button(pending.grouped ? "上传图集" : "上传 \(pending.urls.count) 张") { state.confirmPending() }
+                    .buttonStyle(.borderedProminent)
+            }.controlSize(.regular)
+        }.padding(16)
     }
 }
 
 private struct SettingsView: View {
     @ObservedObject var state: AppState
-
+    @State private var advanced = false
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 13) {
-                sectionTitle("Caliph 上传")
-                field("上传地址", text: $state.uploadURL, placeholder: "https://caliph.chengyu.dev/api/drop")
-                secureField("CALIPH_DROP_TOKEN", text: $state.token, placeholder: "只保存在 macOS Keychain")
-
-                Toggle("上传后立即发布到图库", isOn: $state.publishImmediately)
-                Toggle("使用文件名作为标题", isOn: $state.useFilenameAsTitle)
-                Toggle("成功后复制最后一张图片 URL", isOn: $state.copyLastURL)
-                Toggle(
-                    "登录时自动启动",
-                    isOn: Binding(
-                        get: { state.launchAtLogin },
-                        set: { state.setLaunchAtLogin($0) }
-                    )
-                )
-
-                sectionTitle("沿用网站现有压缩规则")
-                HStack {
-                    Text("最长边")
-                    Spacer()
-                    Text("\(Int(state.maxPixel)) px").foregroundStyle(.secondary)
-                }
-                Slider(value: $state.maxPixel, in: 1280...4096, step: 128)
-
-                HStack {
-                    Text("质量")
-                    Spacer()
-                    Text(String(format: "%.0f%%", state.quality * 100)).foregroundStyle(.secondary)
-                }
-                Slider(value: $state.quality, in: 0.6...0.95, step: 0.01)
-
-                Toggle("优先输出 WebP（系统编码器支持时）", isOn: $state.preferWebP)
-
-                Text("默认参数已经与你的网站后台一致：最长边 2560px、质量 0.88。只有无需缩放、没有相机/GPS 等私密元数据且重新编码没有更小时，才会保留原图。Token 不会写进源码，而是保存在 macOS Keychain。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack {
-                    Button("退出 Caliph Drop") { state.quit() }
-                        .controlSize(.small)
-                    Spacer()
-                    Button("保存") { state.saveSettings() }
-                        .keyboardShortcut(.defaultAction)
-                }
-                .padding(.top, 4)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 17) {
+                    section("上传连接") {
+                        field("上传地址") {
+                            TextField("https://caliph.chengyu.dev/api/drop", text: $state.uploadURL).textFieldStyle(.roundedBorder)
+                        }
+                        field("上传密钥") { SecureField("保存在 macOS 钥匙串", text: $state.token).textFieldStyle(.roundedBorder) }
+                    }
+                    section("上传之后") {
+                        Toggle("自动发布到图库", isOn: $state.publishImmediately)
+                        Text("网站需要补充标题时会保留为草稿，并在结果中标明。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Toggle("使用文件名作为标题", isOn: $state.useFilenameAsTitle)
+                        Toggle("复制最后一张图片链接", isOn: $state.copyLastURL)
+                    }
+                    section("启动") {
+                        Toggle("登录时自动启动", isOn: Binding(get: { state.launchAtLogin }, set: { state.setLaunchAtLogin($0) }))
+                        Text("此开关立即生效").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    DisclosureGroup("高级压缩设置", isExpanded: $advanced) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack { Text("最长边"); Spacer(); Text("\(Int(state.maxPixel)) px").monospacedDigit() }
+                            Slider(value: $state.maxPixel, in: 1280...4096, step: 128).accessibilityLabel("最长边像素")
+                            HStack { Text("质量"); Spacer(); Text("\(Int(state.quality * 100))%").monospacedDigit() }
+                            Slider(value: $state.quality, in: 0.6...0.95, step: 0.01).accessibilityLabel("图片压缩质量")
+                            Toggle("优先 WebP", isOn: $state.preferWebP)
+                            Text("默认 2560 px / 88%。系统不支持 WebP 时保留透明度并回退 PNG 或 JPEG。仅对新导入的任务生效。")
+                                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }.padding(.top, 10)
+                    }.font(.system(size: 12, weight: .medium))
+                }.font(.system(size: 12)).toggleStyle(.switch).controlSize(.small).padding(18)
             }
-            .padding(16)
+            if !state.settingsMessage.isEmpty {
+                Text(state.settingsMessage).font(.system(size: 12)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18).padding(.bottom, 10)
+                    .accessibilityLabel("设置提示：\(state.settingsMessage)")
+            }
+            Divider()
+            HStack {
+                Menu("更多") { Button("退出 Caliph Drop") { state.quit() } }.frame(width: 65)
+                Spacer()
+                Button("放弃修改") { state.cancelSettings() }
+                Button("保存设置") { state.saveSettings() }.buttonStyle(.borderedProminent)
+            }.controlSize(.regular).padding(16)
         }
-        .onAppear { state.refreshLaunchAtLoginStatus() }
     }
-
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.secondary)
-            .tracking(0.8)
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            content()
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
-
-    private func field(_ label: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.system(size: 10, weight: .medium))
-            TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func secureField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.system(size: 10, weight: .medium))
-            SecureField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
-        }
+    private func field<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(size: 12)); content().font(.system(size: 13)) }
     }
 }
